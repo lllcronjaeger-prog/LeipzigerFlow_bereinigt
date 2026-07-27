@@ -1,0 +1,1 @@
+from .trailer_table_model import TrailerTableModel

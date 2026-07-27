@@ -1,0 +1,11 @@
+PySide6
+SQLAlchemy
+openpyxl
+pytest
+requests
+geopy
+networkx
+ortools
+pandas
+matplotlib
+folium

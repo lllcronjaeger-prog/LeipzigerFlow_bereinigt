@@ -1,0 +1,14 @@
+{
+  "priority": 100,
+  "time_window": 100,
+  "location_match": 85,
+  "vehicle_compatibility": 100,
+  "keep_driver": 60,
+  "extend_existing_tour": 80,
+  "minimize_empty_run": 75,
+  "avoid_subcontractor": 70,
+  "resource_reserve": 100,
+  "avoid_recoupling": 80,
+  "followup_potential": 70,
+  "planning_stability": 100
+}

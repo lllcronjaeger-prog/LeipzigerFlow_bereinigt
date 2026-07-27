@@ -1,0 +1,1 @@
+from .trailer_repository import TrailerRepository

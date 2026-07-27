@@ -1,0 +1,42 @@
+# Virtuelle Umgebungen
+.venv/
+venv/
+env/
+
+# Python-Cache und Testwerkzeuge
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Paket- und Build-Artefakte
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# IDEs und Betriebssystem
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Laufzeitdaten
+*.log
+data/logs/*
+!data/logs/.gitkeep
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.dbtree
+
+# Temporäre Dateien und Exporte
+*.tmp
+*.bak
+~$*
+exports/
