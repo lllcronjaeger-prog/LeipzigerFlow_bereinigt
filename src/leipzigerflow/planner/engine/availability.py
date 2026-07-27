@@ -44,8 +44,11 @@ class ResourceAvailabilityEngine:
     def _from_day_tours(self, vehicle, tours, planning_day: date, known_locations=()) -> list[ResourceAvailability]:
         result: list[ResourceAvailability] = []
         for index, tour in enumerate(tours, start=1):
-            schedule = self.time_engine.build_schedule(tour)
             shift_start = datetime.combine(planning_day, tour.planned_start_time or time(6, 0))
+            # Eine automatisch angelegte, noch leere Tagestour besitzt keine
+            # Arbeitszeit aus dem Vortag. Sie startet vollständig neu an der
+            # für den Planungstag ermittelten Basis bzw. am Fernverkehrsstandort.
+            schedule = None if not getattr(tour, "positions", None) else self.time_engine.build_schedule(tour)
             profile = getattr(vehicle, "staffing_profile", None)
             shift_minutes = int(getattr(profile, "shift_minutes", self.DEFAULT_SHIFT_MINUTES) or self.DEFAULT_SHIFT_MINUTES)
             shift_end = shift_start + timedelta(minutes=shift_minutes)
@@ -53,9 +56,11 @@ class ResourceAvailabilityEngine:
             resolved = self.state_resolver.resolve(vehicle, driver, planning_day, shift_start, tour, known_locations)
             last_position = tour.positions[-1] if tour.positions else None
             location = resolved.home_base_location if resolved.return_to_base_required else (last_position.transport_order.unloading_location if last_position else resolved.start_location)
-            available_at = max(shift_start, schedule.end_at)
-            state = self._state_for_tour(tour, schedule.end_at, planning_day)
-            blocked_reason = self._blocking_reason(vehicle, schedule.start_at, schedule.end_at, tour)
+            available_at = shift_start if schedule is None else max(shift_start, schedule.end_at)
+            schedule_start = shift_start if schedule is None else schedule.start_at
+            schedule_end = shift_start if schedule is None else schedule.end_at
+            state = self._state_for_tour(tour, schedule_end, planning_day)
+            blocked_reason = self._blocking_reason(vehicle, schedule_start, schedule_end, tour)
             if blocked_reason:
                 state = ResourceState.WORKSHOP
             result.append(ResourceAvailability(

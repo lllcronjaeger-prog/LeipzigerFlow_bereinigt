@@ -176,7 +176,9 @@ class DriverDialog(QDialog):
         # -----------------------------------------------------
 
         self._load_drivers()
-        self._restore_window_state()
+        # Die Fenstergeometrie wird zentral vom WindowManager verwaltet.
+        # Ein zweites restoreGeometry() auf dem eingebetteten Dialog konnte
+        # das vollständige Fahrerfenster unsichtbar oder stark verkleinert öffnen.
 
     # ---------------------------------------------------------
     # Laden und Suchen
@@ -469,14 +471,11 @@ class DriverDialog(QDialog):
         self._settings.sync()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
-        self._save_window_state()
         super().closeEvent(event)
 
     def accept(self) -> None:
-        self._save_window_state()
         super().accept()
 
     def reject(self) -> None:
-        self._save_window_state()
         super().reject()
 

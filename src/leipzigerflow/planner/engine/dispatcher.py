@@ -114,6 +114,7 @@ class AutomaticDispatcher:
         planning_context = FleetPlanningContext.build(resources, orders)
         assignments_by_vehicle: dict[int, int] = {}
         planned_minutes_by_vehicle: dict[int, int] = {}
+        transfer_route_cache: dict[tuple[int | None, int | None], object | None] = {}
         unique_vehicle_ids = {int(resource.vehicle_id) for resource in working_resources}
         unused_vehicle_ids = set(unique_vehicle_ids)
         result.planning_trace.append(self.planning_core.trace(
@@ -139,8 +140,20 @@ class AutomaticDispatcher:
                     if owner_vehicle_id is not None and int(resource.vehicle_id) != owner_vehicle_id:
                         continue
                     order = orders_by_id[order_id]
+                    transfer_key = (
+                        getattr(resource, "location_id", None),
+                        getattr(order, "loading_location_id", None),
+                    )
+                    if transfer_key not in transfer_route_cache:
+                        transfer_route_cache[transfer_key] = self._transfer_route_for(resource, order)
+                    transfer_route_result = transfer_route_cache[transfer_key]
                     score = self.scoring_engine.evaluate(
-                        resource, order, candidates[order_id], planning_context
+                        resource,
+                        order,
+                        candidates[order_id],
+                        planning_context,
+                        route_result=route_by_order.get(order_id),
+                        transfer_route_result=transfer_route_result,
                     )
                     self._apply_hard_business_rules(
                         score,
@@ -265,10 +278,14 @@ class AutomaticDispatcher:
                 if alternative.vehicle_label != resource.vehicle_label
             ][: self.MAX_ALTERNATIVES]
             route_result = route_by_order[int(best_order.id)]
-            transfer_route = self._route_between(
+            transfer_key = (
                 getattr(resource, "location_id", None),
                 getattr(best_order, "loading_location_id", None),
             )
+            transfer_route = transfer_route_cache.get(transfer_key)
+            if transfer_key not in transfer_route_cache:
+                transfer_route = self._transfer_route_for(resource, best_order)
+                transfer_route_cache[transfer_key] = transfer_route
             return_route = self._route_between(
                 getattr(best_order, "unloading_location_id", None),
                 getattr(resource, "home_base_location_id", None),
@@ -586,6 +603,18 @@ class AutomaticDispatcher:
                 score.reasons.append(
                     f"Eigenes Fahrzeug möglichst im Regionalverkehr halten ({distance:.1f} km) -{penalty}"
                 )
+
+
+    def _transfer_route_for(self, resource, order):
+        loading = getattr(order, "loading_location", None)
+        # Unit tests and detached preview objects must not resolve unrelated
+        # database/cache routes solely from coincidentally matching numeric IDs.
+        if loading is None or not hasattr(loading, "_sa_instance_state"):
+            return None
+        return self._route_between(
+            getattr(resource, "location_id", None),
+            getattr(order, "loading_location_id", None),
+        )
 
     def _route_between(self, origin_id, destination_id):
         if not origin_id or not destination_id or int(origin_id) == int(destination_id):

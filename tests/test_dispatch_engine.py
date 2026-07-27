@@ -496,3 +496,50 @@ def test_cumulative_driver_work_above_ten_hours_is_blocked():
         "Arbeitszeit" in reason and "10:00" in reason
         for unassigned in result.unassigned for reason in unassigned.reasons
     )
+
+
+def test_dispatcher_uses_routing_duration_for_unloading_timeline():
+    from leipzigerflow.routing.models import RouteResult
+
+    class FixedRoutingService:
+        def calculate(self, origin_location_id: int, destination_location_id: int):
+            assert (origin_location_id, destination_location_id) == (1, 2)
+            return RouteResult(180.0, 150, provider="test")
+
+    resource = _resource()
+    order = _order(1, "LF-ROUTE-TIME")
+    order.loading_location._sa_instance_state = object()
+    order.unloading_location._sa_instance_state = object()
+
+    result = AutomaticDispatcher(routing_service=FixedRoutingService()).simulate(
+        [resource], [order], date(2026, 7, 21)
+    )
+
+    assert result.assigned_count == 1
+    assignment = result.assignments[0]
+    assert assignment.loading_at == datetime(2026, 7, 21, 8, 0)
+    assert assignment.unloading_at == datetime(2026, 7, 21, 11, 30)
+    assert assignment.available_again_at == datetime(2026, 7, 21, 12, 30)
+    assert any("Routing: 150 Minuten" in reason for reason in assignment.reasons)
+
+
+def test_dispatcher_keeps_30_minute_fallback_without_routing_duration():
+    from leipzigerflow.routing.models import RouteResult
+
+    class MissingDurationRoutingService:
+        def calculate(self, origin_location_id: int, destination_location_id: int):
+            return RouteResult(None, 0, provider="fallback", estimated=True)
+
+    resource = _resource()
+    order = _order(1, "LF-ROUTE-FALLBACK")
+    order.loading_location._sa_instance_state = object()
+    order.unloading_location._sa_instance_state = object()
+
+    result = AutomaticDispatcher(routing_service=MissingDurationRoutingService()).simulate(
+        [resource], [order], date(2026, 7, 21)
+    )
+
+    assert result.assigned_count == 1
+    assignment = result.assignments[0]
+    assert assignment.unloading_at == datetime(2026, 7, 21, 9, 30)
+    assert any("mit 30 Minuten geschätzt" in reason for reason in assignment.reasons)

@@ -41,6 +41,8 @@ class AssignmentScoringEngine:
         order,
         candidate,
         context: FleetPlanningContext | None = None,
+        route_result=None,
+        transfer_route_result=None,
     ) -> AssignmentScore:
         context = context or FleetPlanningContext()
         score = self.weights.normalized(self.weights.priority, candidate.priority_score)
@@ -75,7 +77,17 @@ class AssignmentScoringEngine:
             score += points
             reasons.append(f"Trailertyp {actual} kompatibel +{points}")
 
-        transfer_minutes = 0 if resource.location_id == int(order.loading_location_id) else self.TRANSFER_MINUTES
+        same_location = resource.location_id == int(order.loading_location_id)
+        transfer_minutes = 0
+        if not same_location:
+            transfer_minutes = int(getattr(transfer_route_result, "duration_minutes", 0) or 0)
+            if transfer_minutes <= 0:
+                transfer_minutes = self.TRANSFER_MINUTES
+                reasons.append(
+                    f"Leerfahrt zum ersten Ladeort mangels Routingwert mit {transfer_minutes} Minuten geschätzt"
+                )
+            else:
+                reasons.append(f"Leerfahrt zum ersten Ladeort aus Routing: {transfer_minutes} Minuten")
         if transfer_minutes > self.rules.max_empty_run_minutes:
             rejection.append(
                 f"Anfahrt {transfer_minutes} Minuten überschreitet Regelgrenze von "
@@ -126,7 +138,15 @@ class AssignmentScoringEngine:
 
         loading_minutes = max(0, int(getattr(order.loading_location, "loading_duration_minutes", 60) or 60))
         unloading_minutes = max(0, int(getattr(order.unloading_location, "unloading_duration_minutes", 60) or 60))
-        unload_arrival = loading_at + timedelta(minutes=loading_minutes + self.TRANSFER_MINUTES)
+        route_minutes = int(getattr(route_result, "duration_minutes", 0) or 0)
+        if route_minutes <= 0:
+            route_minutes = self.TRANSFER_MINUTES
+            reasons.append(
+                f"Fahrzeit Laden–Entladen mangels Routingwert mit {route_minutes} Minuten geschätzt"
+            )
+        else:
+            reasons.append(f"Fahrzeit Laden–Entladen aus Routing: {route_minutes} Minuten")
+        unload_arrival = loading_at + timedelta(minutes=loading_minutes + route_minutes)
         booked_unload_start = datetime.combine(order.unloading_date, order.unloading_time_from) if order.unloading_time_from else datetime.combine(order.unloading_date, datetime.min.time())
         booked_unload_end = datetime.combine(order.unloading_date, order.unloading_time_until) if order.unloading_time_until else None
         location_unload_start, location_unload_end = self.time_engine._opening_window(order.unloading_location, order.unloading_date)
