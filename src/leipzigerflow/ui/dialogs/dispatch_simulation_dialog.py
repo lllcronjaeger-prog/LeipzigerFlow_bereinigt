@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import fields
+from datetime import timedelta
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
