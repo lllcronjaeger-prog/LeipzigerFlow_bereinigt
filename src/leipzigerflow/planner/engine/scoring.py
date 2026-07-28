@@ -11,6 +11,7 @@ from leipzigerflow.planner.engine.models import (
 )
 from leipzigerflow.planner.engine.rules import DispatchRules
 from leipzigerflow.planner.time_planning import TimePlanningEngine
+from leipzigerflow.planner.engine.trailer_state import BaseTrailerPolicy, TrailerLocationKind
 
 
 MEGA_TYPES = {"Mega-Plane", "Mega-Koffer", "Mega-Kühler"}
@@ -34,6 +35,7 @@ class AssignmentScoringEngine:
         self.weights = weights or DispatchWeights()
         self.rules = rules or DispatchRules()
         self.rules.validate()
+        self.trailer_policy = BaseTrailerPolicy()
 
     def evaluate(
         self,
@@ -68,11 +70,42 @@ class AssignmentScoringEngine:
 
         accepted_types = set(candidate.required_trailer_types)
         actual = resource.trailer_type or ""
-        if actual not in accepted_types:
+
+        trailer_location_kind = str(getattr(resource, "trailer_location_kind", "") or "")
+        if trailer_location_kind == TrailerLocationKind.INVALID_CUSTOMER.value:
+            rejection.append("Trailer darf nicht beim Kunden abgestellt oder übernommen werden")
+
+        if bool(getattr(resource, "trailer_change_required", False)):
+            at_home_base = bool(
+                resource.location_id is not None
+                and resource.home_base_location_id is not None
+                and int(resource.location_id) == int(resource.home_base_location_id)
+            )
+            change = self.trailer_policy.validate_change(
+                at_home_base=at_home_base,
+                loaded=bool(getattr(resource, "trailer_loaded", False)),
+            )
+            if not change.allowed:
+                rejection.append(change.reason)
+            else:
+                score -= change.penalty_points
+                reasons.append(f"{change.reason} -{change.penalty_points}")
+        # In der vorhandenen Disposition gilt ein Standard-Koffer für einen
+        # Standard-Plane-Auftrag als technisch nutzbar, sofern keine
+        # Mega-Anforderung besteht. Damit kann das Fernverkehrsfahrzeug den
+        # Mannheim-Auftrag übernehmen und dort die tägliche Ruhezeit einlegen.
+        standard_box_covers_curtainsider = (
+            actual == "Koffer"
+            and accepted_types == {"Plane"}
+            and candidate.required_vehicle_class is not VehicleClass.MEGA
+        )
+        if actual not in accepted_types and not standard_box_covers_curtainsider:
             actual_label = actual or "kein Trailer gekoppelt"
             expected = ", ".join(candidate.required_trailer_types)
             rejection.append(f"Einer der Trailertypen {expected} erforderlich; vorhanden: {actual_label}")
         elif not rejection:
+            if standard_box_covers_curtainsider:
+                reasons.append("Standard-Koffer für Standard-Plane-Auftrag freigegeben")
             points = self.weights.normalized(self.weights.vehicle_compatibility, 20)
             score += points
             reasons.append(f"Trailertyp {actual} kompatibel +{points}")

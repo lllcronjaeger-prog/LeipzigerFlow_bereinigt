@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from copy import replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from time import perf_counter
 
 from leipzigerflow.planner.engine.context import FleetPlanningContext
+from leipzigerflow.planner.engine.decision_log import CandidateDecision
 from leipzigerflow.planner.engine.history import DecisionHistoryEntry, DecisionHistoryStore
 from leipzigerflow.planner.engine.models import (
     AlternativeAssignment,
@@ -25,6 +26,8 @@ from leipzigerflow.planner.engine.rules import DispatchRules
 from leipzigerflow.planner.engine.scoring import AssignmentScoringEngine
 from leipzigerflow.planner.engine.tour_builder import AutomaticTourBuilder
 from leipzigerflow.planner.engine.transport_chains import TransportChainDetector
+from leipzigerflow.planner.engine.workday import WorkdayCalculator
+from leipzigerflow.planner.engine.multiday import FutureDemandIndex
 from leipzigerflow.routing import get_default_routing_service
 
 
@@ -51,6 +54,9 @@ class AutomaticDispatcher:
         self.chain_detector = TransportChainDetector()
         self.planning_core = PlanningEngineCore()
         self.routing_service = routing_service or get_default_routing_service()
+        self.workday_calculator = WorkdayCalculator(
+            fallback_route_minutes=int(getattr(self.scoring_engine, "TRANSFER_MINUTES", 30) or 30)
+        )
 
     def simulate(
         self,
@@ -60,6 +66,7 @@ class AutomaticDispatcher:
         profile: OptimizationProfile = OptimizationProfile.BALANCED,
         replanning_reasons: list[str] | None = None,
         strategy: PlanningStrategy = PlanningStrategy.MAX_UTILIZATION,
+        future_orders_by_day: dict[date, list] | None = None,
     ) -> DispatchSimulationResult:
         started = perf_counter()
         result = DispatchSimulationResult(
@@ -89,6 +96,7 @@ class AutomaticDispatcher:
              f"Fehlkapazität {abs(balance) // 60}:{abs(balance) % 60:02d} h"),
             2,
         ))
+        future_demand = FutureDemandIndex(future_orders_by_day or {})
         candidates = {int(order.id): self.priority_engine.build(order, planning_day) for order in orders}
         orders_by_id = {int(order.id): order for order in orders}
         route_by_order = {order_id: self._route_for_order(order) for order_id, order in orders_by_id.items()}
@@ -115,6 +123,9 @@ class AutomaticDispatcher:
         assignments_by_vehicle: dict[int, int] = {}
         planned_minutes_by_vehicle: dict[int, int] = {}
         transfer_route_cache: dict[tuple[int | None, int | None], object | None] = {}
+        transfer_cache_hits = 0
+        transfer_cache_misses = 0
+        candidate_evaluations = 0
         unique_vehicle_ids = {int(resource.vehicle_id) for resource in working_resources}
         unused_vehicle_ids = set(unique_vehicle_ids)
         result.planning_trace.append(self.planning_core.trace(
@@ -145,8 +156,12 @@ class AutomaticDispatcher:
                         getattr(order, "loading_location_id", None),
                     )
                     if transfer_key not in transfer_route_cache:
+                        transfer_cache_misses += 1
                         transfer_route_cache[transfer_key] = self._transfer_route_for(resource, order)
+                    else:
+                        transfer_cache_hits += 1
                     transfer_route_result = transfer_route_cache[transfer_key]
+                    candidate_evaluations += 1
                     score = self.scoring_engine.evaluate(
                         resource,
                         order,
@@ -170,7 +185,8 @@ class AutomaticDispatcher:
                             route_by_order.get(order_id),
                         )
                         self._apply_state_transition_score(
-                            score, order, resource=resource
+                            score, order, resource=resource,
+                            prior_assignments=prior_assignments,
                         )
                         planned_minutes = planned_minutes_by_vehicle.get(resource.vehicle_id, 0)
                         chain_length = chain_plan.chain_length_from(order_id)
@@ -213,6 +229,18 @@ class AutomaticDispatcher:
                         elif assignments_by_vehicle and len(assignments_by_vehicle) < len({r.vehicle_id for r in working_resources}):
                             score.score += 12
                             score.reasons.append("Noch ungenutztes geeignetes Fahrzeug einbeziehen +12")
+                        # Look-ahead is deliberately a soft rule. Local vehicles return
+                        # to base and therefore receive no destination-positioning bonus.
+                        if not getattr(resource, "return_to_base_required", False):
+                            future_bonus, future_reasons = future_demand.score_for_destination(
+                                getattr(order, "unloading_location_id", None), planning_day
+                            )
+                            if future_bonus:
+                                score.score += future_bonus
+                                score.reasons.extend(future_reasons)
+                    result.candidate_decisions.append(
+                        CandidateDecision.from_score(score, str(order.order_number))
+                    )
                     scores_by_order[order_id].append(score)
                     if score.feasible:
                         all_scores.append((score, order, index))
@@ -290,6 +318,13 @@ class AutomaticDispatcher:
                 getattr(best_order, "unloading_location_id", None),
                 getattr(resource, "home_base_location_id", None),
             ) if getattr(resource, "return_to_base_required", False) else None
+            for decision in reversed(result.candidate_decisions):
+                if (
+                    decision.order_number == str(best_order.order_number)
+                    and decision.vehicle_label == str(resource.vehicle_label)
+                ):
+                    decision.selected = True
+                    break
             assignment = ProposedAssignment(
                 vehicle_id=resource.vehicle_id,
                 vehicle_label=resource.vehicle_label,
@@ -343,6 +378,11 @@ class AutomaticDispatcher:
                 return_to_base_minutes=(int(getattr(return_route, "duration_minutes", 0) or 0) if return_route is not None else 0),
                 return_to_base_distance_km=(getattr(return_route, "distance_km", None) if return_route is not None else None),
                 return_route_estimated=bool(getattr(return_route, "estimated", False)) if return_route is not None else False,
+                projected_end_location_id=int(best_order.unloading_location_id),
+                future_positioning_score=sum(
+                    int(reason.rsplit("+", 1)[1]) for reason in best.reasons
+                    if reason.startswith("Zukunftspositionierung:") and "+" in reason
+                ),
                 equivalent_best=(
                     len(ranked) > 1
                     and ranked[1].equivalent_to_best
@@ -419,6 +459,14 @@ class AutomaticDispatcher:
             7,
         ))
         result.simulation_seconds = perf_counter() - started
+        result.performance_metrics = {
+            "candidate_evaluations": candidate_evaluations,
+            "order_route_cache_entries": len(route_by_order),
+            "transfer_route_cache_entries": len(transfer_route_cache),
+            "transfer_route_cache_hits": transfer_cache_hits,
+            "transfer_route_cache_misses": transfer_cache_misses,
+            "simulation_milliseconds": round(result.simulation_seconds * 1000, 3),
+        }
         return result
 
     @staticmethod
@@ -466,9 +514,31 @@ class AutomaticDispatcher:
                 f"reserviert ({distance:.1f} km)"
             )
 
-        candidate_minutes = self._candidate_work_minutes(score, order, route_result)
         return_minutes = self._return_to_base_minutes(resource, order)
-        total_minutes = already_planned_minutes + candidate_minutes + return_minutes
+        workday = self.workday_calculator.candidate(
+            score=score,
+            order=order,
+            route_result=route_result,
+            return_to_base_minutes=return_minutes,
+            already_planned_minutes=already_planned_minutes,
+        )
+        candidate_minutes = workday.assignment_minutes
+
+        # Nahverkehr darf den Arbeitstag nicht außerhalb der Heimatbasis beenden.
+        # Mehrtägige Aufträge sind deshalb für Ressourcen mit täglicher
+        # Basisrückkehr unzulässig. Zusätzlich muss auch die Rückfahrt selbst
+        # noch innerhalb der aktuellen Fahrerschicht liegen.
+        if getattr(resource, "return_to_base_required", False):
+            available_again = getattr(score, "planned_available_at", None)
+            duty_end = getattr(resource, "duty_end_at", None)
+            if available_again is not None and available_again.date() > score.planned_loading_at.date():
+                score.feasible = False
+                score.rejection_reasons.append(
+                    "Nahverkehr muss am selben Arbeitstag zur Heimatbasis zurückkehren; "
+                    "der Auftrag endet erst am Folgetag"
+                )
+        total_minutes = workday.total_minutes
+        score.reasons.append(f"Arbeitszeitbestandteile: {workday.components_text()}")
         if return_minutes:
             score.reasons.append(
                 f"Verbindliche Rückfahrt zur Basis {resource.home_base_location_label or ''}: "
@@ -499,31 +569,16 @@ class AutomaticDispatcher:
         # Deterministic fallback mirrors the transfer fallback used by scoring.
         return int(getattr(self.scoring_engine, "TRANSFER_MINUTES", 30) or 30)
 
-    @staticmethod
-    def _candidate_work_minutes(score, order, route_result) -> int:
-        route_minutes = int(getattr(route_result, "duration_minutes", 0) or 0)
-        if route_minutes <= 0:
-            route_minutes = max(0, round((score.planned_unloading_at - score.planned_loading_at).total_seconds() / 60))
-            # Calendar waiting until a next-day delivery is not driver work.
-            if score.planned_unloading_at.date() > score.planned_loading_at.date():
-                route_minutes = 30
-        loading_minutes = max(0, int(getattr(order.loading_location, "loading_duration_minutes", 60) or 60))
-        unloading_minutes = max(0, int(getattr(order.unloading_location, "unloading_duration_minutes", 60) or 60))
-        return max(0, int(score.transfer_minutes)) + max(0, int(score.waiting_minutes)) + route_minutes + loading_minutes + unloading_minutes
+    def _candidate_work_minutes(self, score, order, route_result) -> int:
+        return self.workday_calculator.candidate(
+            score=score, order=order, route_result=route_result
+        ).assignment_minutes
 
-    @staticmethod
-    def _assignment_work_minutes(assignment, order=None) -> int:
-        route_minutes = max(0, int(getattr(assignment, "route_duration_minutes", 0) or 0))
-        transfer = max(0, int(getattr(assignment, "transfer_minutes", 0) or 0))
-        waiting = max(0, int(getattr(assignment, "waiting_minutes", 0) or 0))
-        loading = max(0, int(getattr(getattr(order, "loading_location", None), "loading_duration_minutes", 60) or 60))
-        unloading = max(0, int(getattr(getattr(order, "unloading_location", None), "unloading_duration_minutes", 60) or 60))
-        if route_minutes <= 0:
-            route_minutes = 30
-        return transfer + waiting + route_minutes + loading + unloading
+    def _assignment_work_minutes(self, assignment, order=None) -> int:
+        return self.workday_calculator.assignment(assignment, order).assignment_minutes
 
 
-    def _apply_state_transition_score(self, score, order, *, resource) -> None:
+    def _apply_state_transition_score(self, score, order, *, resource, prior_assignments: int = 0) -> None:
         """Bewertet nicht nur den Auftrag, sondern den resultierenden Tagesendzustand.
 
         Nahverkehr soll regionale Shuttle-Leistung übernehmen und am selben Tag
@@ -556,10 +611,12 @@ class AutomaticDispatcher:
                 score.reasons.append("Fernverkehrskapazität für passende Anschlussrelation freihalten -35")
             if ends_away:
                 bonus = 180
-                # Ein nicht repetitiver Auftrag, der aus dem Shuttle-Korridor
-                # herausführt, ist ein besonders geeigneter Tagesabschluss.
+                # Der auswärtige Fernverkehrsauftrag ist ein Tagesabschluss,
+                # kein Frühstart. Zuerst werden bis zu zwei passende regionale
+                # Shuttle-Umläufe genutzt; danach erhält der Mannheim-Auftrag
+                # den starken Abschlussbonus.
                 if not is_shuttle:
-                    bonus += 180
+                    bonus = 40 if prior_assignments < 2 else 360
                 score.score += bonus
                 score.reasons.append(
                     f"Fernverkehr kann am Entladeort ruhen und dort den Folgetag beginnen +{bonus}"

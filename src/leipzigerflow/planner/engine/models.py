@@ -106,6 +106,12 @@ class ResourceAvailability:
     state: ResourceState
     vehicle_class: VehicleClass
     trailer_type: str = ""
+    trailer_id: int | None = None
+    trailer_label: str = ""
+    trailer_location_kind: str = "Nicht zugeordnet"
+    trailer_location_label: str = ""
+    trailer_loaded: bool = False
+    trailer_change_required: bool = False
     source_tour_id: int | None = None
     source_tour_number: str = ""
     reason: str = ""
@@ -215,6 +221,8 @@ class ProposedAssignment:
     return_to_base_minutes: int = 0
     return_to_base_distance_km: float | None = None
     return_route_estimated: bool = False
+    projected_end_location_id: int | None = None
+    future_positioning_score: int = 0
 
 
 @dataclass(slots=True)
@@ -342,6 +350,8 @@ class DispatchSimulationResult:
     planning_variants: list[PlanningVariant] = field(default_factory=list)
     estimated_capacity_minutes: int = 0
     estimated_demand_minutes: int = 0
+    candidate_decisions: list[object] = field(default_factory=list)
+    performance_metrics: dict[str, float | int] = field(default_factory=dict)
 
     @property
     def assigned_count(self) -> int:

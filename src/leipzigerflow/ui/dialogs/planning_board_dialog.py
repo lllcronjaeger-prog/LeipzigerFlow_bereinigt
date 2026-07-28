@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QProgressBar,
     QScrollArea,
+    QSpinBox,
     QSplitter,
     QStackedWidget,
     QTableView,
@@ -56,8 +57,11 @@ from leipzigerflow.services.transport_order_service import (
 from leipzigerflow.ui.dialogs.tour_planning_dialog import TourPlanningDialog
 from leipzigerflow.ui.dialogs.tour_detail_dialog import TourDetailDialog
 from leipzigerflow.ui.dialogs.transport_order_edit_dialog import TransportOrderEditDialog
-from leipzigerflow.ui.dialogs.dispatch_simulation_dialog import DispatchSimulationDialog
-from leipzigerflow.planner.engine.service import DispatchSimulationService
+from leipzigerflow.ui.dialogs.dispatch_simulation_dialog import (
+    DispatchSimulationDialog,
+    MultiDayDispatchSimulationDialog,
+)
+from leipzigerflow.planner.engine.facade import PlanningEngine
 from leipzigerflow.ui.widgets.weekly_planning_board import WeeklyPlanningBoard
 from leipzigerflow.ui.widgets.tour_timeline import TourTimelineWidget
 from leipzigerflow.ui.widgets.monthly_planning_board import MonthlyPlanningBoard
@@ -312,10 +316,31 @@ def attach_vehicle_continuity(tours) -> None:
         if previous is not None and previous.positions:
             previous_schedule = engine.build_schedule(previous)
             last_position = sorted(previous.positions, key=lambda p: (p.position or 0, p.id or 0))[-1]
-            tour.previous_location = last_position.transport_order.unloading_location
-            tour.previous_available_at = previous_schedule.end_at
+            vehicle = getattr(tour, "vehicle", None)
+            operation_type = str(getattr(vehicle, "operation_type", "") or "").casefold()
+            returns_daily = bool(
+                operation_type == "nahverkehr"
+                or getattr(vehicle, "daily_return_required", False)
+            )
+            tour.previous_location = (
+                getattr(vehicle, "home_base_location", None)
+                if returns_daily
+                else last_position.transport_order.unloading_location
+            )
+            # Ein neuer Arbeitstag beginnt mit einer frischen Schicht. Das Ende
+            # der Vortagestour darf deshalb nicht als heutige Arbeitszeit
+            # übernommen werden.
+            tour.previous_available_at = (
+                previous_schedule.end_at
+                if previous.tour_date == tour.tour_date
+                else None
+            )
         else:
-            tour.previous_location = None
+            # Die erste sichtbare Tour eines Fahrzeugs beginnt an dessen
+            # Heimatbasis. Dadurch erscheint die Leerfahrt zur ersten
+            # Ladestelle auch in der vollständigen Tour-/Fahreransicht.
+            vehicle = getattr(tour, "vehicle", None)
+            tour.previous_location = getattr(vehicle, "home_base_location", None)
             tour.previous_available_at = None
         by_vehicle[vehicle_id] = tour
 
@@ -641,8 +666,18 @@ class PlanningBoardDialog(QDialog):
         self.month_view_button.clicked.connect(self._set_month_mode)
         row.addWidget(self.month_view_button)
         row.addStretch()
+        row.addWidget(QLabel("Planungstage:"))
+        self.auto_dispatch_horizon = QSpinBox()
+        self.auto_dispatch_horizon.setRange(1, 14)
+        self.auto_dispatch_horizon.setValue(3)
+        self.auto_dispatch_horizon.setToolTip(
+            "Anzahl aufeinanderfolgender Tage, die simuliert und gemeinsam übernommen werden"
+        )
+        row.addWidget(self.auto_dispatch_horizon)
         auto_dispatch_button = QPushButton("Auto-Disposition simulieren")
-        auto_dispatch_button.setToolTip("Offene Ladungen anhand der abgeleiteten Fahrzeug- und Fahrerverfügbarkeit bewerten")
+        auto_dispatch_button.setToolTip(
+            "Offene Ladungen für den gewählten Planungshorizont bewerten"
+        )
         auto_dispatch_button.clicked.connect(self._run_dispatch_simulation)
         row.addWidget(auto_dispatch_button)
         refresh_button = QPushButton("Aktualisieren")
@@ -700,9 +735,13 @@ class PlanningBoardDialog(QDialog):
 
     def _run_dispatch_simulation(self):
         planning_day = self.date_edit.date().toPython()
-        service = DispatchSimulationService(self._session)
+        horizon_days = max(1, int(self.auto_dispatch_horizon.value()))
+        engine = PlanningEngine(self._session)
         try:
-            result, resources, weights = service.simulate(planning_day)
+            if horizon_days == 1:
+                result, resources, weights = engine.simulate(planning_day)
+            else:
+                result = engine.simulate_horizon(planning_day, horizon_days=horizon_days)
         except Exception as error:
             QMessageBox.critical(
                 self,
@@ -710,13 +749,21 @@ class PlanningBoardDialog(QDialog):
                 f"Die Simulation konnte nicht erstellt werden:\n{error}",
             )
             return
-        dialog = DispatchSimulationDialog(
-            result,
-            resources,
-            weights,
-            self,
-            apply_callback=lambda selected_result: service.apply(selected_result, planning_day),
-        )
+
+        if horizon_days == 1:
+            dialog = DispatchSimulationDialog(
+                result,
+                resources,
+                weights,
+                self,
+                apply_callback=lambda selected_result: engine.apply(selected_result, planning_day),
+            )
+        else:
+            dialog = MultiDayDispatchSimulationDialog(
+                result,
+                self,
+                apply_callback=engine.apply_horizon,
+            )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.refresh()
 

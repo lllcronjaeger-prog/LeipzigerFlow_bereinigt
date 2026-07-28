@@ -52,3 +52,5 @@ __all__ = [
 from leipzigerflow.planner.engine.tour_builder import AutomaticTourBuilder
 
 from leipzigerflow.planner.engine.transport_chains import TransportChainDetector, TransportChainPlan
+
+from leipzigerflow.planner.engine.facade import PlanningEngine, PlanningKpiSummary, PlanningReplay, ReplayStep

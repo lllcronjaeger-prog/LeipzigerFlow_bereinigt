@@ -543,3 +543,428 @@ def test_dispatcher_keeps_30_minute_fallback_without_routing_duration():
     assignment = result.assignments[0]
     assert assignment.unloading_at == datetime(2026, 7, 21, 9, 30)
     assert any("mit 30 Minuten geschätzt" in reason for reason in assignment.reasons)
+
+
+def test_local_resource_rejects_order_ending_next_day():
+    from datetime import date, datetime, time
+    from types import SimpleNamespace
+    from leipzigerflow.planner.engine.dispatcher import AutomaticDispatcher
+    from leipzigerflow.planner.engine.models import ResourceAvailability, ResourceState, VehicleClass
+
+    day = date(2026, 7, 27)
+    base = SimpleNamespace(id=1, full_display="Basis", name="Basis", loading_duration_minutes=60, unloading_duration_minutes=60)
+    mannheim = SimpleNamespace(id=2, full_display="Mannheim", name="Mannheim", loading_duration_minutes=60, unloading_duration_minutes=60)
+    customer = SimpleNamespace(disposition_priority=5, own_fleet_preferred=False)
+    order = SimpleNamespace(
+        id=9001, order_number="MANNHEIM", order_type="Transport",
+        loading_date=day, unloading_date=date(2026, 7, 28),
+        loading_time_from=None, loading_time_until=None,
+        unloading_time_from=time(6, 0), unloading_time_until=None,
+        loading_time_flexible=False, unloading_time_flexible=False,
+        loading_open_from=None, loading_open_until=None,
+        loading_location_id=1, unloading_location_id=2,
+        loading_location=base, unloading_location=mannheim,
+        required_trailer_type="Plane", customer=customer,
+        dispatch_priority="Eigenfuhrpark bevorzugt", route_distance_km=80,
+    )
+    resource = ResourceAvailability(
+        vehicle_id=1, vehicle_label="8043", driver_id=1, driver_label="Nah",
+        available_at=datetime(2026, 7, 27, 6), location_id=1, location_label="Basis",
+        state=ResourceState.FREE, vehicle_class=VehicleClass.STANDARD, trailer_type="Plane",
+        duty_start_at=datetime(2026, 7, 27, 6), duty_end_at=datetime(2026, 7, 27, 15),
+        return_to_base_required=True, home_base_location_id=1, home_base_location_label="Basis",
+    )
+    result = AutomaticDispatcher().simulate([resource], [order], day)
+    assert result.assigned_count == 0
+    assert any("am selben Arbeitstag" in reason for reason in result.unassigned[0].reasons)
+
+
+def test_workday_calculator_uses_one_return_to_base_only():
+    from leipzigerflow.planner.engine.workday import WorkdayCalculator
+    from leipzigerflow.routing.models import RouteResult
+
+    resource = _resource()
+    order = _order(1, "LF-WORKDAY")
+    score = SimpleNamespace(
+        transfer_minutes=20,
+        waiting_minutes=10,
+        planned_loading_at=datetime(2026, 7, 21, 8, 0),
+        planned_unloading_at=datetime(2026, 7, 21, 10, 0),
+    )
+    calculation = WorkdayCalculator().candidate(
+        score=score,
+        order=order,
+        route_result=RouteResult(50.0, 60, provider="test"),
+        return_to_base_minutes=40,
+        already_planned_minutes=120,
+    )
+
+    assert calculation.assignment_minutes == 20 + 10 + 60 + 60 + 60
+    assert calculation.total_minutes == 120 + calculation.assignment_minutes + 40
+    assert calculation.components_text().count("Rückfahrt") == 1
+
+
+def test_dispatch_result_contains_candidate_decision_protocol():
+    result = AutomaticDispatcher().simulate(
+        [_resource()], [_order(1, "LF-TRACE")], date(2026, 7, 21)
+    )
+
+    decisions = [item for item in result.candidate_decisions if item.order_number == "LF-TRACE"]
+    assert decisions
+    assert any(item.selected for item in decisions)
+    selected = next(item for item in decisions if item.selected)
+    assert selected.feasible is True
+    assert "GEWÄHLT" in selected.as_text()
+    assert any("Arbeitszeitbestandteile" in check for check in selected.checks)
+
+
+def test_customer_priority_1_to_10_changes_score_without_overriding_hard_rules():
+    low = _order(1, "LOW")
+    high = _order(2, "HIGH")
+    low.customer = SimpleNamespace(disposition_priority=1, own_fleet_preferred=False)
+    high.customer = SimpleNamespace(disposition_priority=10, own_fleet_preferred=False)
+    low_result = AutomaticDispatcher().simulate([_resource()], [low], date(2026, 7, 21))
+    high_result = AutomaticDispatcher().simulate([_resource()], [high], date(2026, 7, 21))
+    assert high_result.assignments[0].score > low_result.assignments[0].score
+
+    impossible = _order(3, "IMPOSSIBLE", "Mega-Plane")
+    impossible.customer = SimpleNamespace(disposition_priority=10, own_fleet_preferred=False)
+    blocked = AutomaticDispatcher().simulate([_resource()], [impossible], date(2026, 7, 21))
+    assert blocked.assigned_count == 0
+    assert any("Mega" in reason for reason in blocked.unassigned[0].reasons)
+
+
+def test_candidate_decision_contains_balanced_score_components():
+    result = AutomaticDispatcher().simulate(
+        [_resource()], [_order(1, "LF-SCORE-COMPONENTS")], date(2026, 7, 21)
+    )
+    selected = next(item for item in result.candidate_decisions if item.selected)
+
+    assert selected.score_components
+    assert sum(selected.score_components.values()) == selected.score
+    assert "Priorität" in selected.score_components
+    assert "Teil-Scores:" in selected.as_text()
+
+
+def test_dispatch_reports_routing_cache_and_performance_metrics():
+    orders = [_order(1, "LF-PERF-1"), _order(2, "LF-PERF-2")]
+    result = AutomaticDispatcher().simulate([_resource()], orders, date(2026, 7, 21))
+
+    metrics = result.performance_metrics
+    assert metrics["candidate_evaluations"] >= 2
+    assert metrics["order_route_cache_entries"] == 2
+    assert metrics["transfer_route_cache_misses"] >= 1
+    assert metrics["transfer_route_cache_hits"] >= 1
+    assert metrics["simulation_milliseconds"] >= 0
+
+
+def test_trailer_change_is_rejected_away_from_home_base():
+    resource = _resource()
+    resource.trailer_change_required = True
+    resource.location_id = 200
+    resource.home_base_location_id = 100
+    order = _order(901, "LF-TRAILER-CUSTOMER")
+
+    result = AutomaticDispatcher().simulate([resource], [order], date(2026, 7, 21))
+
+    assert result.open_count == 1
+    assert any(
+        "Trailerwechsel nur an der Heimatbasis" in reason
+        for reason in result.unassigned[0].reasons
+    )
+
+
+def test_loaded_trailer_change_at_base_is_allowed_but_penalized():
+    normal = _resource()
+    normal.vehicle_id = 1
+    normal.vehicle_label = "L-LL 1001"
+    normal.location_id = 100
+    normal.home_base_location_id = 100
+
+    exceptional = _resource()
+    exceptional.vehicle_id = 2
+    exceptional.vehicle_label = "L-LL 1002"
+    exceptional.location_id = 100
+    exceptional.home_base_location_id = 100
+    exceptional.trailer_change_required = True
+    exceptional.trailer_loaded = True
+
+    order = _order(902, "LF-TRAILER-LOADED")
+    dispatcher = AutomaticDispatcher()
+    result = dispatcher.simulate([normal, exceptional], [order], date(2026, 7, 21))
+
+    assert result.assigned_count == 1
+    assert result.assignments[0].vehicle_id == 1
+    exceptional_decisions = [
+        decision for decision in result.candidate_decisions
+        if decision.order_number == "LF-TRAILER-LOADED" and decision.vehicle_label == "L-LL 1002"
+    ]
+    assert exceptional_decisions
+    assert exceptional_decisions[0].feasible is True
+    assert any("Beladener Trailerwechsel" in check for check in exceptional_decisions[0].checks)
+
+
+def test_customer_trailer_location_is_a_hard_rejection():
+    from leipzigerflow.planner.engine.trailer_state import TrailerLocationKind
+
+    resource = _resource()
+    resource.trailer_location_kind = TrailerLocationKind.INVALID_CUSTOMER.value
+    order = _order(903, "LF-TRAILER-LOCATION")
+
+    result = AutomaticDispatcher().simulate([resource], [order], date(2026, 7, 21))
+
+    assert result.open_count == 1
+    assert any(
+        "Trailer darf nicht beim Kunden" in reason
+        for reason in result.unassigned[0].reasons
+    )
+
+
+def test_future_demand_index_rewards_longhaul_destination_only():
+    from datetime import date
+    from types import SimpleNamespace
+    from leipzigerflow.planner.engine.multiday import FutureDemandIndex
+
+    tomorrow = date(2026, 7, 28)
+    order = SimpleNamespace(loading_location_id=200)
+    index = FutureDemandIndex({tomorrow: [order, order]})
+
+    score, reasons = index.score_for_destination(200, date(2026, 7, 27))
+    assert score == 32
+    assert reasons and "2 Folgeauftrag" in reasons[0]
+    assert index.score_for_destination(999, date(2026, 7, 27)) == (0, [])
+
+
+def test_multiday_state_projector_returns_local_vehicle_to_base_and_keeps_longhaul_destination():
+    from datetime import date, datetime, timedelta
+    from types import SimpleNamespace
+    from leipzigerflow.planner.engine.models import ResourceAvailability, ResourceState, VehicleClass
+    from leipzigerflow.planner.engine.multiday import MultiDayStateProjector
+
+    day = date(2026, 7, 27)
+    start = datetime(2026, 7, 27, 8, 0)
+    local = ResourceAvailability(
+        vehicle_id=1, vehicle_label="LOCAL", driver_id=1, driver_label="A",
+        available_at=start, location_id=10, location_label="Basis",
+        state=ResourceState.FREE, vehicle_class=VehicleClass.STANDARD,
+        return_to_base_required=True, home_base_location_id=10,
+        home_base_location_label="Basis",
+    )
+    longhaul = ResourceAvailability(
+        vehicle_id=2, vehicle_label="LONG", driver_id=2, driver_label="B",
+        available_at=start, location_id=10, location_label="Basis",
+        state=ResourceState.FREE, vehicle_class=VehicleClass.STANDARD,
+        return_to_base_required=False, home_base_location_id=10,
+        home_base_location_label="Basis",
+    )
+    assignments = [
+        SimpleNamespace(vehicle_id=1, available_again_at=start + timedelta(hours=8),
+                        return_to_base_minutes=45, unloading_location_label="Mannheim",
+                        projected_end_location_id=20),
+        SimpleNamespace(vehicle_id=2, available_again_at=start + timedelta(hours=8),
+                        return_to_base_minutes=0, unloading_location_label="Mannheim",
+                        projected_end_location_id=20),
+    ]
+    simulation = SimpleNamespace(assignments=assignments)
+    projector = MultiDayStateProjector()
+    states = projector.project_day_end([local, longhaul], simulation, day)
+    by_vehicle = {state.vehicle_id: state for state in states}
+
+    assert by_vehicle[1].location_id == 10
+    assert by_vehicle[1].location_label == "Basis"
+    assert by_vehicle[2].location_id == 20
+    assert by_vehicle[2].location_label == "Mannheim"
+
+    next_resources = projector.resources_for_next_day([local, longhaul], states, day + timedelta(days=1))
+    assert all(item.available_at.date() == day + timedelta(days=1) for item in next_resources)
+    assert all(item.available_at.hour == 8 for item in next_resources)
+    assert next(item for item in next_resources if item.vehicle_id == 2).location_id == 20
+
+
+def test_apply_horizon_persists_every_simulated_day_in_order():
+    from datetime import date
+    from types import SimpleNamespace
+    from leipzigerflow.planner.engine.service import DispatchSimulationService
+    from leipzigerflow.planner.engine.multiday import MultiDayPlanningResult
+
+    service = DispatchSimulationService.__new__(DispatchSimulationService)
+    calls = []
+
+    def fake_apply(day_result, planning_day):
+        calls.append((planning_day, day_result.label))
+        return day_result.created, day_result.assigned
+
+    service.apply = fake_apply
+    result = MultiDayPlanningResult(start_day=date(2026, 7, 27), horizon_days=3)
+    result.daily_results = {
+        date(2026, 7, 29): SimpleNamespace(label="Tag 3", created=1, assigned=2),
+        date(2026, 7, 27): SimpleNamespace(label="Tag 1", created=2, assigned=6),
+        date(2026, 7, 28): SimpleNamespace(label="Tag 2", created=1, assigned=5),
+    }
+
+    created, assigned = service.apply_horizon(result)
+
+    assert calls == [
+        (date(2026, 7, 27), "Tag 1"),
+        (date(2026, 7, 28), "Tag 2"),
+        (date(2026, 7, 29), "Tag 3"),
+    ]
+    assert created == 4
+    assert assigned == 13
+
+
+def test_apply_reuses_existing_empty_vehicle_tour(monkeypatch):
+    from datetime import date, datetime
+    from types import SimpleNamespace
+    from leipzigerflow.planner.engine import service as service_module
+    from leipzigerflow.planner.engine.service import DispatchSimulationService
+
+    planning_day = date(2026, 7, 28)
+    empty_tour = SimpleNamespace(
+        id=22,
+        planning_locked=False,
+        driver_id=99,
+        planned_start_time=None,
+        positions=[],
+    )
+    order = SimpleNamespace(id=501)
+
+    class FakeSession:
+        def get(self, model, object_id):
+            return order if int(object_id) == 501 else None
+
+    class FakeTourService:
+        created = []
+
+        def __init__(self, session):
+            self.session = session
+
+        def get(self, tour_id):
+            return None
+
+        def create(self, values):
+            self.created.append(values)
+            return SimpleNamespace(positions=[])
+
+        def add_order(self, tour, transport_order):
+            tour.positions.append(SimpleNamespace(transport_order_id=transport_order.id))
+            return tour
+
+    monkeypatch.setattr(service_module, "TourService", FakeTourService)
+    service = DispatchSimulationService.__new__(DispatchSimulationService)
+    service.session = FakeSession()
+    service._find_reusable_empty_tour = lambda day, vehicle_id: empty_tour
+
+    assignment = SimpleNamespace(order_id=501, loading_date=planning_day)
+    proposal = SimpleNamespace(
+        source_tour_id=None,
+        vehicle_id=43,
+        driver_id=7,
+        planned_start_at=datetime(2026, 7, 28, 6, 30),
+        assignments=[assignment],
+    )
+    result = SimpleNamespace(
+        proposed_tours=[proposal],
+        planning_strategy=SimpleNamespace(value="Mehrtag"),
+    )
+
+    created, assigned = service.apply(result, planning_day)
+
+    assert created == 0
+    assert assigned == 1
+    assert empty_tour.driver_id == 7
+    assert empty_tour.planned_start_time.hour == 6
+    assert empty_tour.positions[0].transport_order_id == 501
+    assert FakeTourService.created == []
+
+
+def test_apply_merges_multiple_proposals_for_same_vehicle_and_day(monkeypatch):
+    from datetime import date, datetime
+    from types import SimpleNamespace
+    from leipzigerflow.planner.engine import service as service_module
+    from leipzigerflow.planner.engine.service import DispatchSimulationService
+
+    planning_day = date(2026, 7, 28)
+    empty_tour = SimpleNamespace(
+        id=22,
+        planning_locked=False,
+        driver_id=7,
+        planned_start_time=None,
+        positions=[],
+    )
+    orders = {501: SimpleNamespace(id=501), 502: SimpleNamespace(id=502)}
+
+    class FakeSession:
+        def get(self, model, object_id):
+            return orders.get(int(object_id))
+
+    class FakeTourService:
+        created = []
+
+        def __init__(self, session):
+            self.session = session
+
+        def get(self, tour_id):
+            return None
+
+        def create(self, values):
+            self.created.append(values)
+            return SimpleNamespace(positions=[], planning_locked=False)
+
+        def add_order(self, tour, transport_order):
+            tour.positions.append(SimpleNamespace(transport_order_id=transport_order.id))
+            return tour
+
+    monkeypatch.setattr(service_module, "TourService", FakeTourService)
+    service = DispatchSimulationService.__new__(DispatchSimulationService)
+    service.session = FakeSession()
+    reusable_calls = []
+
+    def find_reusable(day, vehicle_id):
+        reusable_calls.append((day, vehicle_id))
+        return empty_tour
+
+    service._find_reusable_empty_tour = find_reusable
+    proposals = [
+        SimpleNamespace(
+            source_tour_id=None,
+            vehicle_id=44,
+            driver_id=7,
+            planned_start_at=datetime(2026, 7, 28, 6, 0),
+            assignments=[SimpleNamespace(order_id=501, loading_date=planning_day)],
+        ),
+        SimpleNamespace(
+            source_tour_id=None,
+            vehicle_id=44,
+            driver_id=7,
+            planned_start_at=datetime(2026, 7, 28, 10, 0),
+            assignments=[SimpleNamespace(order_id=502, loading_date=planning_day)],
+        ),
+    ]
+    result = SimpleNamespace(
+        proposed_tours=proposals,
+        planning_strategy=SimpleNamespace(value="Mehrtag"),
+    )
+
+    created, assigned = service.apply(result, planning_day)
+
+    assert created == 0
+    assert assigned == 2
+    assert [p.transport_order_id for p in empty_tour.positions] == [501, 502]
+    assert reusable_calls == [(planning_day, 44)]
+    assert FakeTourService.created == []
+
+def test_planning_engine_facade_builds_kpis():
+    from datetime import datetime
+    from leipzigerflow.planner.engine.facade import PlanningEngine
+    from leipzigerflow.planner.engine.models import DispatchSimulationResult
+    summary=PlanningEngine.evaluate(DispatchSimulationResult(created_at=datetime.now(),resources_total=2,orders_total=0))
+    assert summary.assigned_orders==0 and summary.utilization_percent==0.0
+
+def test_planning_engine_facade_replay_preserves_trace_order():
+    from datetime import datetime
+    from leipzigerflow.planner.engine.facade import PlanningEngine
+    from leipzigerflow.planner.engine.models import DispatchSimulationResult,PlanningPhase,PlanningTraceEntry
+    result=DispatchSimulationResult(created_at=datetime.now())
+    result.planning_trace.extend([PlanningTraceEntry(1,PlanningPhase.DAY_ANALYSIS,'Start'),PlanningTraceEntry(2,PlanningPhase.COMPLETED,'Auswahl')])
+    assert [s.message for s in PlanningEngine.replay(result).steps]==['Start','Auswahl']

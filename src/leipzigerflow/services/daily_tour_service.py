@@ -28,7 +28,15 @@ class DailyTourService:
             ).where(Vehicle.active.is_(True))
         ).unique())
         existing = list(self.session.scalars(select(Tour).where(Tour.tour_date == planning_day)))
-        existing_keys = {(int(t.vehicle_id), t.planned_start_time) for t in existing if t.vehicle_id}
+        # A tour that already exists for a vehicle must remain the prepared day tour
+        # even when its start time was adjusted by a previous auto-disposition.
+        # Matching only vehicle + default start time caused ensure_for_day() to create
+        # another empty tour on every later simulation run.
+        existing_vehicle_ids = {int(t.vehicle_id) for t in existing if t.vehicle_id}
+        existing_shift_keys = {
+            (int(t.vehicle_id), int(t.driver_id))
+            for t in existing if t.vehicle_id and t.driver_id
+        }
         tour_service = TourService(self.session)
         created = 0
         for vehicle in vehicles:
@@ -40,7 +48,7 @@ class DailyTourService:
                 from datetime import time
                 start = time(6, 0)
             first_driver_id = getattr(profile, "primary_driver_id", None)
-            if (int(vehicle.id), start) not in existing_keys:
+            if int(vehicle.id) not in existing_vehicle_ids:
                 tour = tour_service.create({
                     "tour_date": planning_day,
                     "planned_start_time": start,
@@ -60,7 +68,7 @@ class DailyTourService:
             ):
                 shift_minutes = int(profile.shift_minutes or 600)
                 second_start = (datetime.combine(planning_day, start) + timedelta(minutes=shift_minutes)).time()
-                if (int(vehicle.id), second_start) not in existing_keys:
+                if (int(vehicle.id), int(profile.relief_driver_id)) not in existing_shift_keys:
                     tour = tour_service.create({
                         "tour_date": planning_day,
                         "planned_start_time": second_start,

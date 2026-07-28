@@ -123,6 +123,9 @@ class DispatchSimulationDialog(QDialog):
         evaluation_button = QPushButton("Auswertung anzeigen")
         evaluation_button.clicked.connect(self._show_evaluation)
         header.addWidget(evaluation_button)
+        replay_button = QPushButton("Replay anzeigen")
+        replay_button.clicked.connect(self._show_replay)
+        header.addWidget(replay_button)
         weights_button = QPushButton("Gewichtungen …")
         weights_button.clicked.connect(self._edit_weights)
         header.addWidget(weights_button)
@@ -141,8 +144,9 @@ class DispatchSimulationDialog(QDialog):
         self._tabs = tabs
         tabs.setUsesScrollButtons(True)
         tabs.setDocumentMode(False)
+        self._replay_tab_index = tabs.addTab(self._replay_tab(), "Replay")
         tabs.addTab(self._planning_trace_tab(), "Planungsverlauf")
-        tabs.addTab(self._variants_tab(), "Planvarianten")
+        self._variants_tab_index = tabs.addTab(self._variants_tab(), "Planvarianten")
         tabs.addTab(self._tours_tab(), "Tourenaufteilung")
         tabs.addTab(self._assignments_tab(), "Vorschläge")
         tabs.addTab(self._suggestions_tab(), f"Optimierungsvorschläge ({self.result.suggestion_count})")
@@ -153,6 +157,9 @@ class DispatchSimulationDialog(QDialog):
         tabs.addTab(self._resources_tab(), "Ressourcen")
         tabs.addTab(self._weights_tab(), "Gewichtungen")
         root.addWidget(tabs, 1)
+        # Open on the operational overview. The Replay button now performs a
+        # visible action instead of pointing to the tab that was already active.
+        tabs.setCurrentIndex(self._variants_tab_index)
 
         footer = QHBoxLayout()
         note = QLabel(
@@ -213,6 +220,24 @@ class DispatchSimulationDialog(QDialog):
         )
         self.accept()
 
+
+
+    def _show_replay(self):
+        self._tabs.setCurrentIndex(self._replay_tab_index)
+
+    def _replay_tab(self) -> QWidget:
+        from leipzigerflow.planner.engine.facade import PlanningEngine
+        widget = QWidget(); layout = QVBoxLayout(widget)
+        info = QLabel("Der Replay zeigt die tatsächlichen Entscheidungsschritte in zeitlicher Reihenfolge und verändert keine Planung.")
+        info.setWordWrap(True); info.setObjectName("muted"); layout.addWidget(info)
+        table = QTableWidget(0, 4); table.setHorizontalHeaderLabels(["Schritt", "Phase", "Entscheidung", "Details"])
+        replay = PlanningEngine.replay(self.result)
+        for step in replay.steps:
+            row = table.rowCount(); table.insertRow(row)
+            self._set_row(table, row, [str(step.sequence), step.phase, step.message, step.details])
+        if replay.is_empty:
+            table.setRowCount(1); self._set_row(table, 0, ["–", "Kein Replay", "", ""])
+        self._finish_table(table); layout.addWidget(table); return widget
 
     def _planning_trace_tab(self) -> QWidget:
         widget = QWidget()
@@ -736,3 +761,132 @@ class DispatchSimulationDialog(QDialog):
         QTabBar::tab:selected { color:#ffffff; background:#1d4ed8; border-color:#1d4ed8; font-weight:700; }
         QTabBar::tab:hover:!selected { background:#cbd5e1; color:#0f172a; }
         """
+
+
+class MultiDayDispatchSimulationDialog(QDialog):
+    """Detailed review and apply dialog for a complete planning horizon."""
+
+    def __init__(self, result, parent=None, apply_callback=None):
+        super().__init__(parent)
+        self.result = result
+        self.apply_callback = apply_callback
+        self.setWindowTitle("Automatische Disposition · Mehrtagesplanung")
+        self.resize(1380, 820)
+        self.setStyleSheet(DispatchSimulationDialog._stylesheet())
+
+        root = QVBoxLayout(self)
+        header = QHBoxLayout()
+        title = QLabel("Automatische Disposition · Mehrtagesplanung")
+        title.setObjectName("title")
+        header.addWidget(title, 1)
+        replay_button = QPushButton("Replay anzeigen")
+        replay_button.clicked.connect(self._show_replay)
+        header.addWidget(replay_button)
+        if self.apply_callback is not None:
+            apply_button = QPushButton("Gesamten Zeitraum übernehmen")
+            apply_button.clicked.connect(self._apply_horizon)
+            header.addWidget(apply_button)
+        root.addLayout(header)
+
+        end_day = result.start_day + timedelta(days=max(0, result.horizon_days - 1))
+        info = QLabel(f"Planungszeitraum: {result.start_day:%d.%m.%Y} bis {end_day:%d.%m.%Y}. Alle Tage werden mit Vorschlägen, Alternativen und Entscheidungsverlauf dargestellt.")
+        info.setWordWrap(True); info.setObjectName("muted"); root.addWidget(info)
+
+        metrics = QHBoxLayout()
+        metrics.addWidget(self._metric("Planungstage", result.horizon_days))
+        metrics.addWidget(self._metric("Disponierte Aufträge", result.assigned_count))
+        metrics.addWidget(self._metric("Offene Aufträge", result.open_count))
+        metrics.addWidget(self._metric("Tourvorschläge", sum(getattr(r, "proposed_tour_count", 0) for r in result.daily_results.values())))
+        root.addLayout(metrics)
+
+        self._tabs = QTabWidget()
+        self._overview_index = self._tabs.addTab(self._overview_tab(), "Tagesübersicht")
+        self._tabs.addTab(self._assignments_tab(), "Vorschläge")
+        self._tabs.addTab(self._alternatives_tab(), "Alternativen")
+        self._tabs.addTab(self._open_orders_tab(), "Offene Aufträge")
+        self._replay_index = self._tabs.addTab(self._replay_tab(), "Replay")
+        self._tabs.setCurrentIndex(self._overview_index)
+        root.addWidget(self._tabs, 1)
+
+        close_button = QPushButton("Schließen")
+        close_button.clicked.connect(self.reject)
+        footer = QHBoxLayout(); footer.addStretch(1); footer.addWidget(close_button); root.addLayout(footer)
+
+    @staticmethod
+    def _metric(caption: str, value) -> QFrame:
+        return DispatchSimulationDialog._metric(caption, value)
+
+    @staticmethod
+    def _finish(table):
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.resizeColumnsToContents()
+        table.horizontalHeader().setStretchLastSection(True)
+
+    def _overview_tab(self):
+        widget=QWidget(); layout=QVBoxLayout(widget); table=QTableWidget(0,8)
+        table.setHorizontalHeaderLabels(["Tag","Aufträge","Disponiert","Offen","Touren","Fahrzeuge","Leerfahrt","Strategie"])
+        for day,r in sorted(self.result.daily_results.items()):
+            row=table.rowCount(); table.insertRow(row)
+            values=[day.strftime("%A, %d.%m.%Y"),getattr(r,'orders_total',0),getattr(r,'assigned_count',0),getattr(r,'open_count',0),getattr(r,'proposed_tour_count',0),getattr(r,'utilized_vehicle_count',0),f"{getattr(r,'total_transfer_minutes',0)} min",getattr(getattr(r,'planning_strategy',None),'value','Mehrtagesplanung')]
+            for c,v in enumerate(values): table.setItem(row,c,QTableWidgetItem(str(v)))
+        self._finish(table); layout.addWidget(table); return widget
+
+    def _assignments_tab(self):
+        widget=QWidget(); layout=QVBoxLayout(widget); table=QTableWidget(0,10)
+        table.setHorizontalHeaderLabels(["Tag","Auftrag","Fahrzeug","Fahrer","Ladebeginn","Wieder frei","Anfahrt","Wartezeit","Score","Entscheidungsgründe"])
+        for day,r in sorted(self.result.daily_results.items()):
+            for a in getattr(r,'assignments',[]) or []:
+                row=table.rowCount(); table.insertRow(row)
+                values=[day.strftime('%d.%m.%Y'),a.order_number,a.vehicle_label,a.driver_label,a.loading_at.strftime('%d.%m.%Y %H:%M'),a.available_again_at.strftime('%d.%m.%Y %H:%M'),f"{a.transfer_minutes} min",f"{a.waiting_minutes} min",a.score,"; ".join(a.reasons)]
+                for c,v in enumerate(values): table.setItem(row,c,QTableWidgetItem(str(v)))
+        self._finish(table); layout.addWidget(table); return widget
+
+    def _alternatives_tab(self):
+        widget=QWidget(); layout=QVBoxLayout(widget); table=QTableWidget(0,9)
+        table.setHorizontalHeaderLabels(["Tag","Auftrag","Rang","Fahrzeug","Fahrer","Planungsart","Ladebeginn","Score","Bewertung / Ablehnung"])
+        for day,r in sorted(self.result.daily_results.items()):
+            for a in getattr(r,'assignments',[]) or []:
+                for rank,alt in enumerate(getattr(a,'alternatives',[]) or [],2):
+                    row=table.rowCount(); table.insertRow(row)
+                    values=[day.strftime('%d.%m.%Y'),a.order_number,rank,alt.vehicle_label,alt.driver_label,getattr(alt.mode,'value',str(alt.mode)),alt.loading_at.strftime('%d.%m.%Y %H:%M') if alt.loading_at else '–',alt.score,"; ".join(alt.reasons)]
+                    for c,v in enumerate(values): table.setItem(row,c,QTableWidgetItem(str(v)))
+        if table.rowCount()==0:
+            table.setRowCount(1); table.setItem(0,0,QTableWidgetItem("Keine Alternativen vorhanden"))
+        self._finish(table); layout.addWidget(table); return widget
+
+    def _open_orders_tab(self):
+        widget=QWidget(); layout=QVBoxLayout(widget); table=QTableWidget(0,5)
+        table.setHorizontalHeaderLabels(["Tag","Auftrag","Priorität","Grund","Empfehlung"])
+        for day,r in sorted(self.result.daily_results.items()):
+            for item in getattr(r,'unassigned',[]) or []:
+                row=table.rowCount(); table.insertRow(row)
+                values=[day.strftime('%d.%m.%Y'),item.order_number,item.priority_score,"; ".join(item.reasons),"Subunternehmer prüfen" if item.subcontractor_recommended else "Intern prüfen"]
+                for c,v in enumerate(values): table.setItem(row,c,QTableWidgetItem(str(v)))
+        self._finish(table); layout.addWidget(table); return widget
+
+    def _replay_tab(self):
+        from leipzigerflow.planner.engine.facade import PlanningEngine
+        widget=QWidget(); layout=QVBoxLayout(widget); table=QTableWidget(0,5)
+        table.setHorizontalHeaderLabels(["Schritt","Tag","Phase","Entscheidung","Details"])
+        replay=PlanningEngine.replay(self.result)
+        for step in replay.steps:
+            row=table.rowCount(); table.insertRow(row)
+            values=[step.sequence,step.planning_day.strftime('%d.%m.%Y') if step.planning_day else '–',step.phase,step.message,step.details]
+            for c,v in enumerate(values): table.setItem(row,c,QTableWidgetItem(str(v)))
+        if replay.is_empty:
+            table.setRowCount(1); table.setItem(0,0,QTableWidgetItem("Kein Replay vorhanden"))
+        self._finish(table); layout.addWidget(table); return widget
+
+    def _show_replay(self):
+        self._tabs.setCurrentIndex(self._replay_index)
+
+    def _apply_horizon(self):
+        answer = QMessageBox.question(self,"Mehrtagesplanung übernehmen",f"Sollen die Touren für alle {self.result.horizon_days} Planungstage gespeichert werden?")
+        if answer != QMessageBox.StandardButton.Yes: return
+        try: created, assigned = self.apply_callback(self.result)
+        except Exception as error:
+            QMessageBox.critical(self,"Mehrtagesplanung übernehmen",f"Die Planung konnte nicht vollständig übernommen werden:\n{error}"); return
+        QMessageBox.information(self,"Mehrtagesplanung übernommen",f"{assigned} Aufträge wurden über {self.result.horizon_days} Tage disponiert. {created} zusätzliche Touren wurden angelegt.")
+        self.accept()
+

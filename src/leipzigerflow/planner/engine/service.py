@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload, selectinload
@@ -18,6 +18,7 @@ from leipzigerflow.planner.engine.configuration import DispatchConfigurationStor
 from leipzigerflow.planner.engine.dispatcher import AutomaticDispatcher
 from leipzigerflow.planner.engine.models import PlanningStrategy, PlanningVariant
 from leipzigerflow.planner.engine.rules import DispatchRuleStore
+from leipzigerflow.planner.engine.multiday import MultiDayPlanningResult, MultiDayStateProjector
 
 
 class DispatchSimulationService:
@@ -68,6 +69,81 @@ class DispatchSimulationService:
             .order_by(TransportOrder.loading_date, TransportOrder.order_number)
         ))
         return self.availability_engine.build(vehicles, tours, planning_day), orders
+
+    def _load_open_orders_for_days(self, start_day: date, horizon_days: int) -> dict[date, list]:
+        end_day = start_day + timedelta(days=max(1, horizon_days) - 1)
+        assigned_ids = select(TourPosition.transport_order_id)
+        orders = list(self.session.scalars(
+            select(TransportOrder)
+            .options(
+                joinedload(TransportOrder.customer),
+                joinedload(TransportOrder.loading_location),
+                joinedload(TransportOrder.unloading_location),
+            )
+            .where(
+                ~TransportOrder.id.in_(assigned_ids),
+                TransportOrder.status.notin_(("Erledigt", "Storniert")),
+                TransportOrder.loading_date >= start_day,
+                TransportOrder.loading_date <= end_day,
+            )
+            .order_by(TransportOrder.loading_date, TransportOrder.order_number)
+        ))
+        grouped = {start_day + timedelta(days=offset): [] for offset in range(max(1, horizon_days))}
+        for order in orders:
+            grouped.setdefault(order.loading_date, []).append(order)
+        return grouped
+
+    def simulate_horizon(
+        self,
+        start_day: date,
+        horizon_days: int = 3,
+        *,
+        strategy: PlanningStrategy = PlanningStrategy.MAX_UTILIZATION,
+    ) -> MultiDayPlanningResult:
+        """Simulate consecutive days while explicitly carrying vehicle state.
+
+        Today's hard rules remain unchanged. Future demand contributes only a
+        bounded soft bonus for long-haul destination positioning. Trailers stay
+        coupled to the vehicle; this method does not create customer-side trailer
+        exchanges.
+        """
+        horizon_days = max(1, min(14, int(horizon_days)))
+        resources, _ = self._load_input(start_day)
+        orders_by_day = self._load_open_orders_for_days(start_day, horizon_days)
+        rules = self.rule_store.load()
+        weights = self.configuration_store.load()
+        projector = MultiDayStateProjector()
+        result = MultiDayPlanningResult(start_day=start_day, horizon_days=horizon_days)
+        current_resources = resources
+
+        for offset in range(horizon_days):
+            planning_day = start_day + timedelta(days=offset)
+            day_orders = orders_by_day.get(planning_day, [])
+            future_orders = {
+                day: orders
+                for day, orders in orders_by_day.items()
+                if day > planning_day
+            }
+            dispatcher = AutomaticDispatcher(weights=weights, rules=rules)
+            day_result = dispatcher.simulate(
+                current_resources,
+                day_orders,
+                planning_day,
+                strategy=strategy,
+                future_orders_by_day=future_orders,
+            )
+            result.daily_results[planning_day] = day_result
+            states = projector.project_day_end(current_resources, day_result, planning_day)
+            result.end_states[planning_day] = states
+            result.trace.append(
+                f"{planning_day:%d.%m.%Y}: {day_result.assigned_count} zugeordnet, "
+                f"{day_result.open_count} offen; Fahrzeugzustände fortgeschrieben"
+            )
+            if offset + 1 < horizon_days:
+                current_resources = projector.resources_for_next_day(
+                    current_resources, states, planning_day + timedelta(days=1)
+                )
+        return result
 
     @staticmethod
     def _variant_metrics(result):
@@ -137,25 +213,82 @@ class DispatchSimulationService:
         primary.planning_strategy = variants[0].strategy
         return primary, resources, weights
 
+    def apply_horizon(self, result: MultiDayPlanningResult) -> tuple[int, int]:
+        """Persist every simulated day of a multi-day planning result.
+
+        Days are applied chronologically so later tours are written on top of
+        the same state sequence that was used during simulation.
+        """
+        created_tours = 0
+        assigned_orders = 0
+        for planning_day, day_result in sorted(result.daily_results.items()):
+            created, assigned = self.apply(day_result, planning_day)
+            created_tours += created
+            assigned_orders += assigned
+        return created_tours, assigned_orders
+
+    def _find_reusable_empty_tour(self, planning_day: date, vehicle_id: int | None):
+        """Return an existing unlocked empty vehicle tour for the planning day.
+
+        DailyTourService creates the vehicle tours before automatic planning. A
+        multi-day simulation carries projected resources without database tour
+        ids, so apply() must reconnect a proposal with these already existing
+        empty tours instead of creating duplicate tours for the following days.
+        """
+        if vehicle_id is None:
+            return None
+        return self.session.scalars(
+            select(Tour)
+            .where(
+                Tour.tour_date == planning_day,
+                Tour.vehicle_id == int(vehicle_id),
+                Tour.planning_locked.is_(False),
+                ~Tour.positions.any(),
+            )
+            .order_by(Tour.planned_start_time, Tour.id)
+        ).first()
+
     def apply(self, result, planning_day: date) -> tuple[int, int]:
         tour_service = TourService(self.session)
         created_tours = 0
         assigned_orders = 0
+        # Multiple proposal clusters can belong to the same vehicle and day.
+        # They must be merged into one physical tour. Otherwise the first
+        # cluster fills the prepared empty tour and a later cluster creates a
+        # duplicate tour for the same vehicle.
+        tours_by_vehicle_day: dict[tuple[date, int], Tour] = {}
         for proposal in getattr(result, "proposed_tours", []) or []:
-            tour = None
+            proposal_day = (
+                proposal.assignments[0].loading_date
+                if proposal.assignments and getattr(proposal.assignments[0], "loading_date", None)
+                else planning_day
+            )
+            vehicle_id = int(proposal.vehicle_id) if proposal.vehicle_id is not None else None
+            vehicle_day_key = (proposal_day, vehicle_id) if vehicle_id is not None else None
+            tour = tours_by_vehicle_day.get(vehicle_day_key) if vehicle_day_key is not None else None
             source_id = getattr(proposal, "source_tour_id", None)
-            if source_id and int(source_id) > 0:
+            if tour is None and source_id and int(source_id) > 0:
                 tour = tour_service.get(int(source_id))
             if tour is not None and getattr(tour, "planning_locked", False):
                 continue
             if tour is None:
+                tour = self._find_reusable_empty_tour(proposal_day, proposal.vehicle_id)
+                if tour is not None:
+                    # The tour is still empty, so aligning its staffing and
+                    # start time with the accepted proposal is safe.
+                    tour.driver_id = proposal.driver_id
+                    if proposal.planned_start_at is not None:
+                        tour.planned_start_time = proposal.planned_start_at.time()
+            if tour is None:
                 tour = tour_service.create({
-                    "tour_date": proposal.assignments[0].loading_date if proposal.assignments and getattr(proposal.assignments[0], "loading_date", None) else planning_day,
+                    "tour_date": proposal_day,
                     "planned_start_time": proposal.planned_start_at.time() if proposal.planned_start_at is not None else None,
                     "status": "Geplant", "driver_id": proposal.driver_id, "vehicle_id": proposal.vehicle_id,
                     "remarks": f"Automatisch aus {getattr(result.planning_strategy, 'value', 'Planungsvariante')} angelegt",
                 })
                 created_tours += 1
+            if vehicle_day_key is not None:
+                tours_by_vehicle_day[vehicle_day_key] = tour
             for assignment in proposal.assignments:
                 order = self.session.get(TransportOrder, int(assignment.order_id))
                 if order is None or any(p.transport_order_id == order.id for p in tour.positions):

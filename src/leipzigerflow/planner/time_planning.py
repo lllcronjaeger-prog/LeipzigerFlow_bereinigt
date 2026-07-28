@@ -163,6 +163,13 @@ class TimePlanningEngine:
         total_distance = 0.0
         distance_complete = True
         previous_location = getattr(tour, "previous_location", None)
+        if previous_location is None:
+            # Eine Tour ohne expliziten Vorgänger beginnt am Heimatstandort des
+            # Fahrzeugs. So wird die Leerfahrt zur ersten Ladestelle in jeder
+            # vollständigen Tour- und Fahreransicht sichtbar und zeitlich
+            # berücksichtigt, nicht nur in der Simulationsvorschau.
+            vehicle_at_start = getattr(tour, "vehicle", None)
+            previous_location = getattr(vehicle_at_start, "home_base_location", None)
         travel_sequence = 0
 
         positions = sorted(tour.positions, key=lambda p: (p.position or 0, p.id or 0))

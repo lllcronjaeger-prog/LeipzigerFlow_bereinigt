@@ -1,18 +1,26 @@
-LeipzigerFlow – Bugfix Leerfahrt, Folgetag und Fahrerfenster
+LeipzigerFlow – Bugfix Planung Nah-/Fernverkehr
+Stand: 27.07.2026
 
 Geänderte Dateien:
-- src/leipzigerflow/planner/engine/scoring.py
 - src/leipzigerflow/planner/engine/dispatcher.py
-- src/leipzigerflow/planner/engine/availability.py
-- src/leipzigerflow/ui/dialogs/driver_dialog.py
+- src/leipzigerflow/planner/engine/scoring.py
+- src/leipzigerflow/planner/time_planning.py
+- src/leipzigerflow/ui/dialogs/planning_board_dialog.py
 - tests/test_dispatch_engine.py
 
-Änderungen:
-1. Die Leerfahrt vom aktuellen Fahrzeugstandort bzw. von der Basis zur ersten Ladestelle wird mit der tatsächlichen Routingdauer berechnet. 30 Minuten bleiben nur als Fallback bestehen.
-2. Dieselbe Leerfahrtroute wird für Prüfung, Arbeitszeit, Vorschau und Toursegment verwendet.
-3. Leere, automatisch angelegte Tagestouren starten mit einer frischen Tagesarbeitszeit. Zeitanteile und Rückfahrten des Vortags werden nicht übernommen.
-4. Die Fahreransicht verwendet nur noch die zentrale Fensterverwaltung. Eine zweite, konkurrierende Wiederherstellung von Dialoggeometrie und Tabellenzustand wurde deaktiviert.
+Korrekturen:
+1. Nahverkehr darf keinen Auftrag mehr erhalten, dessen Entladung erst am Folgetag endet.
+2. 8044 kann den Mannheim-Auftrag als Fernverkehrs-Tagesabschluss übernehmen und dort die Ruhezeit einlegen.
+3. Die Dispositionsreihenfolge nutzt zuerst zwei Shuttle-Umläufe auf 8044 und danach Mannheim.
+4. 8043 erhält drei Shuttle-Umläufe und kehrt noch am selben Kalendertag zur Basis zurück.
+5. Die Leerfahrt von der Basis zur ersten Ladestelle wird auch in der vollständigen Tour-/Fahreransicht erzeugt.
+6. Bei einem neuen Arbeitstag wird die Verfügbarkeit des Vortags nicht als heutige Arbeitszeit übernommen.
+7. Standard-Koffer ist für einen reinen Standard-Plane-Auftrag freigegeben, sofern keine Mega-Anforderung besteht.
 
-Prüfung:
-- 119 Tests erfolgreich.
-- Mit der mitgelieferten Datenbank am 27.07.2026: 6 interne Zuordnungen, 1 regelkonform offener Verkaufsauftrag.
+Reproduziertes Ergebnis für 27.07.2026 mit der mitgelieferten Datenbank:
+- KA-LL 8043: 3 Shuttle-Aufträge Germersheim
+- KA-LL 8044: 2 Shuttle-Aufträge Germersheim + Mannheim
+- 6 interne Zuordnungen, 1 Verkaufsauftrag bleibt offen
+
+Tests:
+120 passed
