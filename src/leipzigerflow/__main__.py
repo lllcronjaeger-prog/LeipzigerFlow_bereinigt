@@ -23,7 +23,7 @@ from leipzigerflow.models.route_cache import GeocodeCacheEntry, RouteCacheEntry
 from leipzigerflow.models.resource_absence import VehicleAbsence, TrailerAbsence
 from leipzigerflow.models.trailer import Trailer
 
-from leipzigerflow.ui.main_window import MainWindow
+from leipzigerflow.application_controller import ApplicationController
 from leipzigerflow.ui.theme import application_stylesheet
 
 
@@ -50,8 +50,9 @@ def main() -> int:
     app.setPalette(palette)
     app.setStyleSheet(application_stylesheet())
 
-    window = MainWindow()
-    window.show()
+    controller = ApplicationController(app)
+    if not controller.start():
+        return 0
 
     return app.exec()
 

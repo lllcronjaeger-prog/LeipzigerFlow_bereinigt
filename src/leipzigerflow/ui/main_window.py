@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import QMainWindow, QMessageBox, QStatusBar, QToolBar, QWidget
 
@@ -22,13 +22,20 @@ from leipzigerflow.ui.dialogs.vehicle_dialog import VehicleDialog
 from leipzigerflow.ui.widgets.dashboard_widget import DashboardWidget
 from leipzigerflow.ui.windows.window_manager import WindowManager
 from leipzigerflow.services.daily_tour_service import DailyTourService
+from leipzigerflow.services.user_session import UserSession
+from leipzigerflow.services.auth_service import AuthService
+from leipzigerflow.models.auth import User
+from leipzigerflow.ui.dialogs.password_dialog import ChangePasswordDialog
 
 
 class MainWindow(QMainWindow):
     """Zentrale Navigation für den Multi-Monitor-Arbeitsplatz."""
 
-    def __init__(self):
+    logout_requested = Signal()
+
+    def __init__(self, user_session: UserSession | None = None):
         super().__init__()
+        self.user_session = user_session or UserSession()
 
         self.setWindowTitle(f"{APP_NAME} {VERSION}")
         self.resize(1350, 900)
@@ -43,6 +50,7 @@ class MainWindow(QMainWindow):
         self._create_toolbar()
         self._create_statusbar()
         self._create_central_widget()
+        self._apply_permissions()
 
         self._last_daily_tour_check = None
         self._ensure_daily_tours()
@@ -147,6 +155,12 @@ class MainWindow(QMainWindow):
         )
 
     def _create_actions(self):
+        self.action_change_password = QAction("Passwort ändern", self)
+        self.action_change_password.triggered.connect(self.change_password)
+
+        self.action_logout = QAction("Benutzer wechseln / Abmelden", self)
+        self.action_logout.triggered.connect(self._request_logout)
+
         self.action_exit = QAction("Beenden", self)
         self.action_exit.triggered.connect(self.close)
 
@@ -203,6 +217,9 @@ class MainWindow(QMainWindow):
 
         file_menu = menu.addMenu("Datei")
         file_menu.addAction(self.action_dashboard)
+        file_menu.addSeparator()
+        file_menu.addAction(self.action_change_password)
+        file_menu.addAction(self.action_logout)
         file_menu.addSeparator()
         file_menu.addAction(self.action_exit)
 
@@ -267,7 +284,7 @@ class MainWindow(QMainWindow):
 
     def _create_statusbar(self):
         status = QStatusBar()
-        status.showMessage("Bereit · Multi-Monitor-Arbeitsplatz aktiv")
+        status.showMessage(self._status_message())
         self.setStatusBar(status)
 
     def _create_central_widget(self):
@@ -281,6 +298,63 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         self.setCentralWidget(self.dashboard)
+
+
+    def _status_message(self) -> str:
+        if self.user_session.is_authenticated:
+            return f"Angemeldet als {self.user_session.label} · Multi-Monitor-Arbeitsplatz aktiv"
+        return "Bereit · Multi-Monitor-Arbeitsplatz aktiv"
+
+    def _apply_permissions(self) -> None:
+        permission_actions = {
+            "customers.view": (self.action_customers,),
+            "fleet.view": (
+                self.action_locations,
+                self.action_drivers,
+                self.action_vehicles,
+                self.action_trailers,
+                self.action_fleet_utilization,
+            ),
+            "orders.view": (self.action_transport_orders, self.action_tours),
+            "planning.view": (self.action_planning_board,),
+            "ai.use": (
+                self.action_ai_assistant,
+                self.action_tour_analysis,
+                self.action_optimization,
+            ),
+            "settings.edit": (self.action_database_settings,),
+        }
+        if not self.user_session.is_authenticated:
+            return
+        for permission, actions in permission_actions.items():
+            allowed = self.user_session.has_permission(permission)
+            for action in actions:
+                action.setEnabled(allowed)
+                action.setVisible(allowed)
+
+    def _request_logout(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Benutzer wechseln",
+            "Möchten Sie sich abmelden und einen anderen Benutzer anmelden?",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.logout_requested.emit()
+
+    def change_password(self) -> None:
+        if not self.user_session.user_id:
+            return
+        session = SessionLocal()
+        try:
+            user = session.get(User, self.user_session.user_id)
+            if user is None:
+                QMessageBox.warning(self, "Passwort ändern", "Der angemeldete Benutzer wurde nicht gefunden.")
+                return
+            if ChangePasswordDialog(session, user, parent=self).exec():
+                self.user_session.must_change_password = False
+                QMessageBox.information(self, "Passwort ändern", "Das Passwort wurde geändert.")
+        finally:
+            session.close()
 
     def open_fleet_utilization(self):
         self.window_manager.open("fleet_utilization")
