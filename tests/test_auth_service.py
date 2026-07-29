@@ -87,3 +87,41 @@ def test_auth_bootstrap_creates_defaults_idempotently():
     assert session.scalar(select(func.count()).select_from(User)) == 1
     assert session.scalar(select(func.count()).select_from(Role)) == len(DEFAULT_ROLE_PERMISSIONS)
     assert session.scalar(select(func.count()).select_from(Permission)) == len(DEFAULT_PERMISSIONS)
+
+
+def test_user_administration_and_password_reset():
+    session = _session()
+    service = AuthService(session)
+    user = service.create_user("fahrer", "SicheresPasswort1!")
+    role = service.create_role("Fahrer")
+    service.assign_roles(user, [role])
+    service.update_user(user, display_name="Max Fahrer", email="max@example.de", is_active=False)
+    service.reset_password(user, "NeuesPasswort1!")
+    session.commit()
+
+    assert user.display_name == "Max Fahrer"
+    assert user.email == "max@example.de"
+    assert not user.is_active
+    assert user.must_change_password
+    assert [assigned.name for assigned in user.roles] == ["Fahrer"]
+    assert PasswordHasher.verify("NeuesPasswort1!", user.password_hash)
+
+
+def test_role_permissions_can_be_replaced_and_role_with_users_cannot_be_deleted():
+    session = _session()
+    service = AuthService(session)
+    user = service.create_user("dispo2", "SicheresPasswort1!")
+    role = service.create_role("Disposition 2")
+    first = service.create_permission("orders.view", "Aufträge ansehen")
+    second = service.create_permission("planning.view", "Planung ansehen")
+    service.assign_role(user, role)
+    service.set_role_permissions(role, [first, second])
+    service.set_role_permissions(role, [second])
+
+    assert [permission.key for permission in role.permissions] == ["planning.view"]
+    try:
+        service.delete_role(role)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Zugewiesene Rolle wurde gelöscht.")

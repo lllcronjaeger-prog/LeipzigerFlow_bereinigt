@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QMainWindow, QMessageBox, QStatusBar, QToolBar, QW
 from leipzigerflow.config.settings import APP_NAME, VERSION
 from leipzigerflow.database.database import SessionLocal
 from leipzigerflow.ui.dialogs.ai_assistant_dialog import AiAssistantDialog
+from leipzigerflow.ui.dialogs.ai_settings_dialog import AiSettingsDialog
 from leipzigerflow.ui.dialogs.customer_dialog import CustomerDialog
 from leipzigerflow.ui.dialogs.database_settings_dialog import DatabaseSettingsDialog
 from leipzigerflow.ui.dialogs.driver_dialog import DriverDialog
@@ -26,6 +27,7 @@ from leipzigerflow.services.user_session import UserSession
 from leipzigerflow.services.auth_service import AuthService
 from leipzigerflow.models.auth import User
 from leipzigerflow.ui.dialogs.password_dialog import ChangePasswordDialog
+from leipzigerflow.ui.dialogs.user_management_dialog import UserManagementDialog
 
 
 class MainWindow(QMainWindow):
@@ -200,8 +202,14 @@ class MainWindow(QMainWindow):
         self.action_optimization = QAction("Optimierung", self)
         self.action_optimization.triggered.connect(self.open_ai_assistant)
 
+        self.action_ai_settings = QAction("KI-Einstellungen", self)
+        self.action_ai_settings.triggered.connect(self.open_ai_settings)
+
         self.action_fleet_utilization = QAction("Flottenauswertung", self)
         self.action_fleet_utilization.triggered.connect(self.open_fleet_utilization)
+
+        self.action_user_management = QAction("Benutzer und Rollen", self)
+        self.action_user_management.triggered.connect(self.open_user_management)
 
         self.action_database_settings = QAction("Datenbank und Speicher", self)
         self.action_database_settings.triggered.connect(self.open_database_settings)
@@ -257,8 +265,12 @@ class MainWindow(QMainWindow):
         ai_menu.addAction(self.action_ai_assistant)
         ai_menu.addAction(self.action_tour_analysis)
         ai_menu.addAction(self.action_optimization)
+        ai_menu.addSeparator()
+        ai_menu.addAction(self.action_ai_settings)
 
         extras_menu = menu.addMenu("Extras")
+        extras_menu.addAction(self.action_user_management)
+        extras_menu.addSeparator()
         extras_menu.addAction(self.action_database_settings)
 
         help_menu = menu.addMenu("Hilfe")
@@ -322,6 +334,8 @@ class MainWindow(QMainWindow):
                 self.action_tour_analysis,
                 self.action_optimization,
             ),
+            "users.manage": (self.action_user_management,),
+            "api.manage": (self.action_ai_settings,),
             "settings.edit": (self.action_database_settings,),
         }
         if not self.user_session.is_authenticated:
@@ -361,6 +375,20 @@ class MainWindow(QMainWindow):
 
     def open_ai_assistant(self):
         AiAssistantDialog(self).exec()
+
+    def open_ai_settings(self):
+        AiSettingsDialog(self).exec()
+
+    def open_user_management(self):
+        session = SessionLocal()
+        try:
+            UserManagementDialog(
+                session,
+                current_user_id=self.user_session.user_id,
+                parent=self,
+            ).exec()
+        finally:
+            session.close()
 
     def open_database_settings(self):
         DatabaseSettingsDialog(self).exec()

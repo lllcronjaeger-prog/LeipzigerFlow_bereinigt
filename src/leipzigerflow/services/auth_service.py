@@ -7,7 +7,7 @@ import secrets
 from datetime import datetime
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from leipzigerflow.models.auth import Permission, Role, User
 
@@ -99,9 +99,45 @@ class AuthService:
         self.session.flush()
         return user
 
+    def list_users(self) -> list[User]:
+        statement = select(User).options(selectinload(User.roles)).order_by(User.username)
+        return list(self.session.scalars(statement).unique())
+
     def get_user(self, username: str) -> User | None:
         normalized = self._normalize_username(username)
-        return self.session.scalar(select(User).where(User.username == normalized))
+        return self.session.scalar(
+            select(User).options(selectinload(User.roles).selectinload(Role.permissions)).where(
+                User.username == normalized
+            )
+        )
+
+    def update_user(
+        self,
+        user: User,
+        *,
+        display_name: str,
+        email: str,
+        is_active: bool,
+    ) -> None:
+        user.display_name = display_name.strip()
+        user.email = email.strip()
+        user.is_active = bool(is_active)
+        self.session.flush()
+
+    def set_user_active(self, user: User, active: bool) -> None:
+        user.is_active = bool(active)
+        self.session.flush()
+
+    def assign_roles(self, user: User, roles: list[Role]) -> None:
+        user.roles[:] = roles
+        self.session.flush()
+
+    def reset_password(self, user: User, temporary_password: str) -> None:
+        self.change_password(user, temporary_password, require_change=True)
+
+    def delete_user(self, user: User) -> None:
+        self.session.delete(user)
+        self.session.flush()
 
     def authenticate(self, username: str, password: str) -> User:
         user = self.get_user(username)
@@ -116,6 +152,10 @@ class AuthService:
         user.must_change_password = require_change
         self.session.flush()
 
+    def list_roles(self) -> list[Role]:
+        statement = select(Role).options(selectinload(Role.permissions)).order_by(Role.name)
+        return list(self.session.scalars(statement).unique())
+
     def create_role(self, name: str, description: str = "") -> Role:
         normalized = name.strip()
         if not normalized:
@@ -127,6 +167,30 @@ class AuthService:
         self.session.add(role)
         self.session.flush()
         return role
+
+    def update_role(self, role: Role, *, name: str, description: str) -> None:
+        normalized = name.strip()
+        if not normalized:
+            raise ValueError("Bitte einen Rollennamen eingeben.")
+        duplicate = self.session.scalar(select(Role).where(Role.name == normalized, Role.id != role.id))
+        if duplicate is not None:
+            raise ValueError("Dieser Rollenname ist bereits vergeben.")
+        role.name = normalized
+        role.description = description.strip()
+        self.session.flush()
+
+    def set_role_permissions(self, role: Role, permissions: list[Permission]) -> None:
+        role.permissions[:] = permissions
+        self.session.flush()
+
+    def delete_role(self, role: Role) -> None:
+        if role.users:
+            raise ValueError("Die Rolle ist noch Benutzern zugewiesen und kann nicht gelöscht werden.")
+        self.session.delete(role)
+        self.session.flush()
+
+    def list_permissions(self) -> list[Permission]:
+        return list(self.session.scalars(select(Permission).order_by(Permission.key)))
 
     def create_permission(self, key: str, description: str = "") -> Permission:
         normalized = key.strip().lower()
