@@ -23,3 +23,17 @@ def test_ollama_accepts_latest_tag_for_untagged_model(monkeypatch):
     provider = OllamaProvider(AiConfig(provider="ollama", model="qwen3"))
     monkeypatch.setattr(provider, "installed_models", lambda: {"qwen3:latest"})
     provider.test_connection()
+
+
+def test_ollama_stream_parser_yields_incremental_text():
+    lines = [
+        b'{"message":{"content":"Hallo"},"done":false}\n',
+        b'{"message":{"content":" Welt"},"done":false}\n',
+        b'{"message":{"content":""},"done":true}\n',
+    ]
+    assert list(OllamaProvider._extract_stream_chunks(lines)) == ["Hallo", " Welt"]
+
+
+def test_ollama_stream_parser_surfaces_api_error():
+    with pytest.raises(AiProviderError, match="Modell nicht gefunden"):
+        list(OllamaProvider._extract_stream_chunks([b'{"error":"Modell nicht gefunden"}\n']))

@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from sqlalchemy.orm import Session
 
 from .config import AiConfig, load_ai_config
 from .context import AiContextBuilder
 from .provider import AiMessage, AiProvider, create_provider
+from .router import AiQueryRouter
 
 SYSTEM_PROMPT = """Du bist LeipzigerAI, ein deutschsprachiger Assistent für Disposition und Tourenplanung.
 Nutze ausschließlich den bereitgestellten LeipzigerFlow-Kontext. Erfinde keine Datensätze.
 Du darfst keine Daten verändern, keine Touren automatisch disponieren und keine Aktionen ausführen.
 Formuliere konkrete, nachvollziehbare Analysen und kennzeichne Unsicherheiten klar.
-Bei fehlenden Daten sage ausdrücklich, welche Information fehlt."""
+Bei fehlenden Daten sage ausdrücklich, welche Information fehlt.
+Antworte ausschließlich auf Deutsch und maximal in fünf kurzen Sätzen.
+Gib niemals interne Überlegungen, Gedankengänge, englische Zwischentexte oder Selbstgespräche aus.
+Antworte kompakt und beginne direkt mit dem Ergebnis. /no_think"""
 
 
 class AiService:
@@ -19,17 +25,55 @@ class AiService:
         self.config = config or load_ai_config()
         self.provider = provider or create_provider(self.config)
 
-    def ask(self, question: str, history: list[AiMessage] | None = None) -> str:
+    def _messages(self, question: str, history: list[AiMessage] | None = None) -> list[AiMessage]:
         question = question.strip()
         if not question:
             raise ValueError("Bitte eine Frage eingeben.")
         if not self.config.enabled:
             raise RuntimeError("Die KI-Anbindung ist in den Einstellungen nicht aktiviert.")
-        context = AiContextBuilder(self.session, self.config.max_context_records).build()
+        context = AiContextBuilder(self.session, self.config.max_context_records).build(question)
         messages = [AiMessage("system", SYSTEM_PROMPT), AiMessage("system", context)]
-        messages.extend((history or [])[-10:])
+        messages.extend((history or [])[-6:])
         messages.append(AiMessage("user", question))
-        return self.provider.complete(messages)
+        return messages
+
+    def _validate_question(self, question: str) -> str:
+        question = question.strip()
+        if not question:
+            raise ValueError("Bitte eine Frage eingeben.")
+        if not self.config.enabled:
+            raise RuntimeError("Die KI-Anbindung ist in den Einstellungen nicht aktiviert.")
+        return question
+
+    def _direct_answer(self, question: str) -> str | None:
+        result = AiQueryRouter(self.session).answer(question)
+        return result.text if result else None
+
+    def ask(self, question: str, history: list[AiMessage] | None = None) -> str:
+        question = self._validate_question(question)
+        direct = self._direct_answer(question)
+        if direct is not None:
+            return direct
+        return self.provider.complete(self._messages(question, history))
+
+    def ask_stream(
+        self,
+        question: str,
+        history: list[AiMessage] | None,
+        on_chunk: Callable[[str], None],
+        is_cancelled: Callable[[], bool] | None = None,
+    ) -> str:
+        question = self._validate_question(question)
+        direct = self._direct_answer(question)
+        if direct is not None:
+            if not (is_cancelled and is_cancelled()):
+                on_chunk(direct)
+            return direct
+        return self.provider.stream_complete(
+            self._messages(question, history),
+            on_chunk,
+            is_cancelled,
+        )
 
     def test_connection(self) -> None:
         self.provider.test_connection()

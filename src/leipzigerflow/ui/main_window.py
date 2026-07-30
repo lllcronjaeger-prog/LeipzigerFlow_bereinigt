@@ -193,14 +193,8 @@ class MainWindow(QMainWindow):
         self.action_planning_board = QAction("Plantafel", self)
         self.action_planning_board.triggered.connect(self.open_planning_board)
 
-        self.action_ai_assistant = QAction("Dispositionsassistent", self)
+        self.action_ai_assistant = QAction("LeipzigerAI – Dispositionsassistent", self)
         self.action_ai_assistant.triggered.connect(self.open_ai_assistant)
-
-        self.action_tour_analysis = QAction("Touranalyse", self)
-        self.action_tour_analysis.triggered.connect(self.open_ai_assistant)
-
-        self.action_optimization = QAction("Optimierung", self)
-        self.action_optimization.triggered.connect(self.open_ai_assistant)
 
         self.action_ai_settings = QAction("KI-Einstellungen", self)
         self.action_ai_settings.triggered.connect(self.open_ai_settings)
@@ -263,8 +257,6 @@ class MainWindow(QMainWindow):
 
         ai_menu = menu.addMenu("KI")
         ai_menu.addAction(self.action_ai_assistant)
-        ai_menu.addAction(self.action_tour_analysis)
-        ai_menu.addAction(self.action_optimization)
         ai_menu.addSeparator()
         ai_menu.addAction(self.action_ai_settings)
 
@@ -329,11 +321,7 @@ class MainWindow(QMainWindow):
             ),
             "orders.view": (self.action_transport_orders, self.action_tours),
             "planning.view": (self.action_planning_board,),
-            "ai.use": (
-                self.action_ai_assistant,
-                self.action_tour_analysis,
-                self.action_optimization,
-            ),
+            "ai.use": (self.action_ai_assistant,),
             "users.manage": (self.action_user_management,),
             "api.manage": (self.action_ai_settings,),
             "settings.edit": (self.action_database_settings,),
