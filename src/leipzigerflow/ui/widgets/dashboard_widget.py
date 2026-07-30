@@ -248,30 +248,6 @@ class DashboardWidget(QWidget):
             kpi_grid.setColumnMinimumWidth(column, 230)
         root.addLayout(kpi_grid)
 
-        quick_panel = self._create_panel("Schnellzugriffe")
-        quick_row = QHBoxLayout()
-        quick_row.setSpacing(10)
-        quick_actions = (
-            ("Plantafel öffnen", self._open_planning_board),
-            ("Transportaufträge", self._open_orders),
-            ("Touren", self._open_tours),
-            ("Fahrer", self._open_drivers),
-            ("Zugmaschinen", self._open_vehicles),
-        )
-        for label, callback in quick_actions:
-            button = QPushButton(label)
-            button.setMinimumHeight(38)
-            button.clicked.connect(callback)
-            quick_row.addWidget(button)
-        if self._open_ai_assistant is not None:
-            ai_button = QPushButton("LeipzigerAI")
-            ai_button.setMinimumHeight(38)
-            ai_button.clicked.connect(self._open_ai_assistant)
-            quick_row.addWidget(ai_button)
-        quick_row.addStretch(1)
-        quick_panel.layout().addLayout(quick_row)
-        root.addWidget(quick_panel)
-
         distribution = QHBoxLayout()
         distribution.setSpacing(18)
         resource_panel = self._create_panel("Ressourcenverfügbarkeit")

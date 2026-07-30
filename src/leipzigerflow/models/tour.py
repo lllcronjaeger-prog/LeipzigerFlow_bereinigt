@@ -68,6 +68,12 @@ class Tour(Base):
         index=True,
     )
 
+    contractor_id: Mapped[int | None] = mapped_column(ForeignKey("contractors.id"), nullable=True, index=True)
+    dispatch_group_id: Mapped[int | None] = mapped_column(ForeignKey("dispatch_groups.id"), nullable=True, index=True)
+    planning_status: Mapped[str] = mapped_column(String(30), default="Geplant", nullable=False, index=True)
+    priority: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+    tour_color: Mapped[str] = mapped_column(String(20), default="", nullable=False)
+
     remarks: Mapped[str] = mapped_column(
         Text,
         default="",
@@ -89,6 +95,15 @@ class Tour(Base):
     driver = relationship("Driver")
     vehicle = relationship("Vehicle")
     trailer = relationship("Trailer")
+    contractor = relationship("Contractor", back_populates="tours")
+    dispatch_group = relationship("DispatchGroup", back_populates="tours")
+    driver_assignments = relationship(
+        "TourDriverAssignment",
+        back_populates="tour",
+        cascade="all, delete-orphan",
+        order_by="TourDriverAssignment.sequence",
+        lazy="selectin",
+    )
 
     positions = relationship(
         "TourPosition",

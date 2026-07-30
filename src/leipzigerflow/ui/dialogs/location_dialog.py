@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 
 from leipzigerflow.database.session import SessionLocal
 from leipzigerflow.models.location import Location
+from leipzigerflow.services.customer_service import CustomerService
 from leipzigerflow.services.location_service import (
     LocationService,
 )
@@ -30,6 +31,7 @@ class LocationDialog(QDialog):
 
         self.session = SessionLocal()
         self.service = LocationService(self.session)
+        self.customer_service = CustomerService(self.session)
 
         self.model = LocationTableModel(
             self.service.get_all()
@@ -108,7 +110,7 @@ class LocationDialog(QDialog):
 
     def new_location(self):
 
-        dialog = LocationEditDialog(parent=self)
+        dialog = LocationEditDialog(parent=self, customers=self.customer_service.get_all())
 
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -138,6 +140,7 @@ class LocationDialog(QDialog):
         dialog = LocationEditDialog(
             location,
             self,
+            customers=self.customer_service.get_all(),
         )
 
         if dialog.exec() != QDialog.DialogCode.Accepted:

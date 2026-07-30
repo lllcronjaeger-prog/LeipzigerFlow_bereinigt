@@ -7,6 +7,7 @@ from sqlalchemy.orm import (
 
 from leipzigerflow.models.tour import Tour
 from leipzigerflow.models.tour_position import TourPosition
+from leipzigerflow.models.tour_driver_assignment import TourDriverAssignment
 from leipzigerflow.models.transport_order import TransportOrder
 
 
@@ -21,6 +22,9 @@ class TourRepository:
         return select(Tour).options(
             joinedload(Tour.driver),
             joinedload(Tour.vehicle),
+            joinedload(Tour.trailer),
+            selectinload(Tour.driver_assignments).joinedload(TourDriverAssignment.driver),
+            selectinload(Tour.driver_assignments).joinedload(TourDriverAssignment.change_base_location),
             selectinload(Tour.positions).joinedload(
                 TourPosition.transport_order
             ).joinedload(TransportOrder.customer),

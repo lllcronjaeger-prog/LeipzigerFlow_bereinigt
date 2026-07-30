@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -40,6 +41,9 @@ from leipzigerflow.config.database_config import load_database_config
 from leipzigerflow.exports import export_tours
 from leipzigerflow.models.customer import Customer
 from leipzigerflow.models.location import Location
+from leipzigerflow.models.dispatch_group import DispatchGroup
+from leipzigerflow.models.vehicle import Vehicle
+from leipzigerflow.models.trailer import Trailer
 from leipzigerflow.planner.period import PlanningPeriod, PlanningPeriodMode
 from leipzigerflow.planner.resources import ResourceConflictEngine
 from leipzigerflow.planner.time_planning import TimePlanningEngine
@@ -56,6 +60,8 @@ from leipzigerflow.services.transport_order_service import (
 )
 from leipzigerflow.ui.dialogs.tour_planning_dialog import TourPlanningDialog
 from leipzigerflow.ui.dialogs.tour_detail_dialog import TourDetailDialog
+from leipzigerflow.ui.dialogs.tour_crew_dialog import TourCrewDialog
+from leipzigerflow.services.tour_resource_assignment_service import TourResourceAssignmentService, ResourceAssignmentError
 from leipzigerflow.ui.dialogs.transport_order_edit_dialog import TransportOrderEditDialog
 from leipzigerflow.ui.dialogs.dispatch_simulation_dialog import (
     DispatchSimulationDialog,
@@ -203,6 +209,9 @@ class DraggableOrderLabel(QLabel):
     """Ein einzelner Tourauftrag, der auf eine andere Tour gezogen werden kann."""
 
     dragStateChanged = Signal(bool)
+    driverRequested = Signal()
+    vehicleRequested = Signal()
+    trailerRequested = Signal()
 
     def __init__(self, text: str, order_id: int, source_tour_id: int, enabled: bool, parent=None):
         super().__init__(text, parent)
@@ -365,6 +374,9 @@ class TourCard(QFrame):
     clicked = Signal()
     activated = Signal()
     dragStateChanged = Signal(bool)
+    driverRequested = Signal()
+    vehicleRequested = Signal()
+    trailerRequested = Signal()
 
     STATUS_COLORS = {
         "Geplant": "#2563eb",
@@ -441,13 +453,35 @@ class TourCard(QFrame):
         time_row.setTextFormat(Qt.TextFormat.RichText)
         content.addWidget(time_row)
 
-        resources = QLabel(
-            f"Fahrer: <b>{tour.driver_display or 'nicht zugeordnet'}</b>"
-            f"   ·   Fahrzeug: <b>{tour.vehicle_display or 'nicht zugeordnet'}</b>"
-        )
-        resources.setObjectName("resourceLabel")
-        resources.setTextFormat(Qt.TextFormat.RichText)
-        content.addWidget(resources)
+        resource_row = QHBoxLayout()
+        resource_row.setSpacing(6)
+        assignments = list(getattr(tour, "driver_assignments", []) or [])
+        if len(assignments) > 1:
+            changes = ", ".join(
+                f"{item.starts_at:%H:%M} {getattr(item.driver, 'full_name', '')}"
+                for item in assignments[1:]
+            )
+            driver_text = f"👥 {len(assignments)} Fahrer · Wechsel {changes}"
+        else:
+            driver_text = f"👤 {tour.driver_display or 'Fahrer auswählen …'}"
+        self.driver_button = QPushButton(driver_text)
+        self.driver_button.setObjectName("resourceChip")
+        self.driver_button.setToolTip("Fahrer zuordnen oder Fahrerwechsel an der Basis planen")
+        self.driver_button.clicked.connect(self.driverRequested.emit)
+        resource_row.addWidget(self.driver_button, 2)
+
+        self.vehicle_button = QPushButton(f"🚛 {tour.vehicle_display or 'Fahrzeug auswählen …'}")
+        self.vehicle_button.setObjectName("resourceChip")
+        self.vehicle_button.clicked.connect(self.vehicleRequested.emit)
+        resource_row.addWidget(self.vehicle_button, 2)
+
+        trailer = getattr(tour, "trailer", None) or getattr(getattr(tour, "vehicle", None), "trailer", None)
+        trailer_text = getattr(trailer, "display_name", "") if trailer else "Trailer auswählen …"
+        self.trailer_button = QPushButton(f"🚚 {trailer_text}")
+        self.trailer_button.setObjectName("resourceChip")
+        self.trailer_button.clicked.connect(self.trailerRequested.emit)
+        resource_row.addWidget(self.trailer_button, 2)
+        content.addLayout(resource_row)
 
         utilization = calculate_tour_time_utilization(tour, schedule)
         utilization_row = QHBoxLayout()
@@ -473,10 +507,12 @@ class TourCard(QFrame):
         utilization_row.addWidget(utilization_status)
         content.addLayout(utilization_row)
 
-        if warnings:
-            warning_count = len(warnings)
-            warning_label = QLabel(f"⚠ {warning_count} Hinweis(e)")
+        visible_warnings = [warning for warning in warnings if str(getattr(warning, "message", "") or "").strip()]
+        if visible_warnings:
+            warning_text = " · ".join(str(warning.message) for warning in visible_warnings)
+            warning_label = QLabel(f"⚠ {len(visible_warnings)} Hinweis(e): {warning_text}")
             warning_label.setObjectName("warningLabel")
+            warning_label.setToolTip("\n".join(str(warning.message) for warning in visible_warnings))
             content.addWidget(warning_label)
 
     def mousePressEvent(self, event):
@@ -776,6 +812,12 @@ class PlanningBoardDialog(QDialog):
         self.tour_search_edit.textChanged.connect(self._filters_changed)
         self.tour_search_edit.setMinimumWidth(330)
         row.addWidget(self.tour_search_edit, 1)
+        self.dispatch_group_filter = QComboBox()
+        self.dispatch_group_filter.addItem("Alle Dispositionsgruppen", None)
+        for group in self._session.scalars(select(DispatchGroup).where(DispatchGroup.active.is_(True)).order_by(DispatchGroup.sort_order, DispatchGroup.name)):
+            self.dispatch_group_filter.addItem(group.name, group.id)
+        self.dispatch_group_filter.currentIndexChanged.connect(self._filters_changed)
+        row.addWidget(self.dispatch_group_filter)
         self.vehicle_filter = QComboBox()
         self.vehicle_filter.addItem("Alle Fahrzeuge", None)
         self.vehicle_filter.currentIndexChanged.connect(self._filters_changed)
@@ -929,9 +971,40 @@ class PlanningBoardDialog(QDialog):
         self.date_edit.setDate(QDate(selected_date.year, selected_date.month, selected_date.day))
         self._set_period_mode(PlanningPeriodMode.DAY)
 
+    @staticmethod
+    def _resource_belongs_to_dispatch_group(resource, group_id: int) -> bool:
+        if resource is None:
+            return False
+        if int(getattr(resource, "dispatch_group_id", 0) or 0) == group_id:
+            return True
+        groups = getattr(resource, "dispatch_groups", ()) or ()
+        return any(int(getattr(group, "id", 0) or 0) == group_id for group in groups)
+
+    def _tour_belongs_to_dispatch_group(self, tour, group_id: int) -> bool:
+        """A tour belongs to a group through an explicit tour assignment or one of its resources.
+
+        PR-015 introduced many-to-many resource assignments. Older plantafel filtering only
+        checked ``tour.dispatch_group_id`` and therefore hid tours whose vehicle had been
+        assigned through the new group editor.
+        """
+        if int(getattr(tour, "dispatch_group_id", 0) or 0) == group_id:
+            return True
+        return any(
+            self._resource_belongs_to_dispatch_group(resource, group_id)
+            for resource in (
+                getattr(tour, "vehicle", None),
+                getattr(tour, "trailer", None),
+                getattr(tour, "driver", None),
+                getattr(tour, "contractor", None),
+            )
+        )
+
     def _tour_matches_filters(self, tour):
         status = self.status_filter.currentData() if hasattr(self, "status_filter") else ""
         if status and tour.status != status:
+            return False
+        group_id = self.dispatch_group_filter.currentData() if hasattr(self, "dispatch_group_filter") else None
+        if group_id and not self._tour_belongs_to_dispatch_group(tour, int(group_id)):
             return False
         vehicle_id = self.vehicle_filter.currentData() if hasattr(self, "vehicle_filter") else None
         if vehicle_id and int(tour.vehicle_id or 0) != int(vehicle_id):
@@ -1019,6 +1092,7 @@ class PlanningBoardDialog(QDialog):
             period = type("MonthPeriod", (), {"start": start, "end": end, "contains": lambda self_, d: d is not None and start <= d <= end})()
         else:
             period = PlanningPeriod.week(selected_date) if self.period_mode == PlanningPeriodMode.WEEK else PlanningPeriod.day(selected_date)
+        self.tour_service.consolidate_duplicate_vehicle_tours()
         self.tour_service.synchronize_completed_tours()
         all_tours = self.tour_service.get_all()
         attach_vehicle_continuity(all_tours)
@@ -1118,6 +1192,9 @@ class PlanningBoardDialog(QDialog):
             card = TourCard(tour, warnings, route_plan=route_plan)
             card.clicked.connect(lambda checked=False, selected_row=row: self._select_tour_row(selected_row))
             card.activated.connect(self._open_selected_tour_details)
+            card.driverRequested.connect(lambda tour_id=int(tour.id): self._edit_tour_drivers(tour_id))
+            card.vehicleRequested.connect(lambda tour_id=int(tour.id): self._assign_vehicle(tour_id))
+            card.trailerRequested.connect(lambda tour_id=int(tour.id): self._assign_trailer(tour_id))
             card.dragStateChanged.connect(self._set_drag_active)
             self.tour_list.addItem(item)
             self.tour_list.setItemWidget(item, card)
@@ -1128,6 +1205,55 @@ class PlanningBoardDialog(QDialog):
             item.setSizeHint(size_hint)
             if tour.id == selected_tour_id:
                 self.tour_list.setCurrentRow(row)
+
+
+    def _tour_by_id(self, tour_id: int):
+        return next((tour for tour in self._tours if int(tour.id) == int(tour_id)), self.tour_service.get(int(tour_id)))
+
+    def _edit_tour_drivers(self, tour_id: int) -> None:
+        tour = self._tour_by_id(tour_id)
+        if tour is None:
+            return
+        if TourCrewDialog(self._session, tour, self).exec() == QDialog.DialogCode.Accepted:
+            self._session.expire_all()
+            self.refresh()
+
+    def _assign_vehicle(self, tour_id: int) -> None:
+        tour = self._tour_by_id(tour_id)
+        vehicles = list(self._session.scalars(select(Vehicle).where(Vehicle.active.is_(True)).order_by(Vehicle.license_plate)))
+        labels = [vehicle.display_name for vehicle in vehicles]
+        if not labels:
+            QMessageBox.information(self, "Fahrzeug zuordnen", "Es sind keine aktiven Fahrzeuge vorhanden.")
+            return
+        current = next((index for index, vehicle in enumerate(vehicles) if vehicle.id == tour.vehicle_id), 0)
+        label, ok = QInputDialog.getItem(self, "Fahrzeug zuordnen", "Fahrzeug:", labels, current, False)
+        if not ok:
+            return
+        tour.vehicle_id = vehicles[labels.index(label)].id
+        self._session.commit()
+        self._session.expire_all()
+        self.refresh()
+
+    def _assign_trailer(self, tour_id: int) -> None:
+        tour = self._tour_by_id(tour_id)
+        service = TourResourceAssignmentService(self._session)
+        trailers = service.active_trailers()
+        labels = [trailer.display_name for trailer in trailers]
+        if not labels:
+            QMessageBox.information(self, "Trailer zuordnen", "Es sind keine aktiven Trailer vorhanden.")
+            return
+        current_id = tour.trailer_id or getattr(getattr(tour, "vehicle", None), "trailer_id", None)
+        current = next((index for index, trailer in enumerate(trailers) if trailer.id == current_id), 0)
+        label, ok = QInputDialog.getItem(self, "Trailer zuordnen", "Trailer (bleibt für Folgetouren am LKW):", labels, current, False)
+        if not ok:
+            return
+        try:
+            service.assign_trailer(tour, trailers[labels.index(label)].id, propagate=True)
+        except ResourceAssignmentError as error:
+            QMessageBox.warning(self, "Trailer zuordnen", str(error))
+            return
+        self._session.expire_all()
+        self.refresh()
 
 
     def _select_tour_row(self, row: int) -> None:
@@ -1508,7 +1634,9 @@ class PlanningBoardDialog(QDialog):
         QFrame#tourCard[dropTarget="true"] { background-color: #eff6ff; border: 2px solid #2563eb; }
         QFrame#tourCard[dropBlocked="true"] { background-color: #fef2f2; border: 2px solid #dc2626; }
         QLabel#tourTitle { font-size: 17px; font-weight: 700; }
-        QLabel#resourceLabel { color: #334155; }
+        QPushButton#resourceChip { text-align: left; padding: 3px 7px; border: 1px solid #cbd5e1; border-radius: 8px; background: #f8fafc; }
+            QPushButton#resourceChip:hover { background: #e0f2fe; border-color: #38bdf8; }
+            QLabel#resourceLabel { color: #334155; }
         QLabel#resourceWarning { color: #b45309; }
         QFrame#stopContainer { background-color: #f8fafc; border: 1px solid #eef2f7; border-radius: 6px; }
         QLabel#stopRow { color: #334155; background-color: transparent; padding: 2px 2px 0 2px; }

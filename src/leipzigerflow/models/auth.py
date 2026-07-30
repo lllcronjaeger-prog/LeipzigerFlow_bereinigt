@@ -34,12 +34,15 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     last_login: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    default_dispatch_group_id: Mapped[int | None] = mapped_column(ForeignKey("dispatch_groups.id"), nullable=True, index=True)
 
     roles: Mapped[list[Role]] = relationship(
         secondary=user_roles,
         back_populates="users",
         lazy="selectin",
     )
+    dispatch_groups = relationship("DispatchGroup", secondary="dispatch_group_users", back_populates="users", lazy="selectin")
+    default_dispatch_group = relationship("DispatchGroup", foreign_keys=[default_dispatch_group_id])
 
     def has_permission(self, permission_key: str) -> bool:
         normalized = permission_key.strip().lower()

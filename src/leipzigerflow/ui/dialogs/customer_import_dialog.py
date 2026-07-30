@@ -11,16 +11,16 @@ from leipzigerflow.services.customer_import_service import CustomerImportService
 
 
 class CustomerImportDialog(QDialog):
-    HEADERS = ["Status", "Excel-Zeile", "Name", "MatchCode", "Straße", "PLZ", "Ort", "Frachtzahler", "Hinweis"]
+    HEADERS = ["Status", "Excel-Zeile", "Standort", "MatchCode", "Straße", "PLZ", "Ort", "Kunde / Frachtzahler", "Hinweis"]
 
     def __init__(self, session, parent=None):
         super().__init__(parent)
         self.service = CustomerImportService(session)
         self.preview: CustomerImportPreview | None = None
-        self.setWindowTitle("Kunden aus Excel importieren")
+        self.setWindowTitle("Kunden und Standorte aus Excel importieren")
         self.resize(1280, 720)
         layout = QVBoxLayout(self)
-        intro = QLabel("Dispoplan-Kundenstamm auswählen. Name, MatchCode und Anschrift werden übernommen. Der Hauptkunde wird als Frachtzahler verknüpft bzw. automatisch angelegt.")
+        intro = QLabel("Dispoplan-Kundenstamm auswählen. Der Hauptkunde wird als Kunde/Frachtzahler angelegt. Jede Excel-Zeile wird als zugehöriger Kundenstandort importiert.")
         intro.setWordWrap(True); layout.addWidget(intro)
         file_row = QHBoxLayout(); self.file_edit = QLineEdit(); self.file_edit.setReadOnly(True)
         choose = QPushButton("Excel-Datei auswählen …"); choose.clicked.connect(self._choose_file)
@@ -32,7 +32,7 @@ class CustomerImportDialog(QDialog):
         for i, width in enumerate((85,85,230,150,220,80,150,220,220)): self.table.setColumnWidth(i, width)
         self.table.horizontalHeader().setStretchLastSection(True); layout.addWidget(self.table, 1)
         bottom = QHBoxLayout(); bottom.addWidget(QLabel("Doppelklick erlaubt Korrekturen vor dem Import.")); bottom.addStretch()
-        self.import_button = QPushButton("Gültige Kunden importieren"); self.import_button.setEnabled(False); self.import_button.clicked.connect(self._import)
+        self.import_button = QPushButton("Kunden und Standorte importieren"); self.import_button.setEnabled(False); self.import_button.clicked.connect(self._import)
         close = QPushButton("Schließen"); close.clicked.connect(self.reject); bottom.addWidget(self.import_button); bottom.addWidget(close); layout.addLayout(bottom)
 
     def _choose_file(self):
@@ -53,8 +53,9 @@ class CustomerImportDialog(QDialog):
                 item = QTableWidgetItem(value)
                 if c in (0,1): item.setFlags(item.flags() & ~Qt.ItemIsEditable); item.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(r,c,item)
-        new = sum(r.status == "Neu" for r in self.preview.rows); updates = sum(r.status == "Update" for r in self.preview.rows)
-        self.summary.setText(f"{len(self.preview.rows)} Kunden gefunden · {new} neu · {updates} Aktualisierungen · {len(self.preview.error_rows)} Fehler")
+        new = sum(r.status == "Standort neu" for r in self.preview.rows); updates = sum(r.status == "Standort aktualisieren" for r in self.preview.rows)
+        owners = {(r.freight_payer_match_code or r.match_code).casefold() for r in self.preview.valid_rows}
+        self.summary.setText(f"{len(self.preview.rows)} Standorte · {len(owners)} Kunde(n) · {new} neu · {updates} Aktualisierungen · {len(self.preview.error_rows)} Fehler")
         self.import_button.setEnabled(bool(self.preview.valid_rows))
 
     def _sync_changes(self):
@@ -81,5 +82,5 @@ class CustomerImportDialog(QDialog):
         try: result = self.service.import_rows(self.preview.rows)
         except Exception as exc:
             QMessageBox.critical(self, "Kundenimport", f"Import fehlgeschlagen:\n{exc}"); return
-        QMessageBox.information(self, "Kundenimport abgeschlossen", f"{result.created} Kunden neu angelegt.\n{result.updated} Kunden aktualisiert.\n{result.freight_payers_created} Frachtzahler neu angelegt.\n{result.skipped} Zeilen übersprungen.")
+        QMessageBox.information(self, "Kundenimport abgeschlossen", f"{result.customers_created} Kunden neu angelegt.\n{result.customers_updated} Kunden wiederverwendet/aktualisiert.\n{result.locations_created} Standorte neu angelegt.\n{result.locations_updated} Standorte aktualisiert.\n{result.skipped} Zeilen übersprungen.")
         self.accept()

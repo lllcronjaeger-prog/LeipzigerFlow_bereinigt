@@ -31,6 +31,62 @@ class TourService:
     def get_all(self) -> list[Tour]:
         return self.repository.get_all()
 
+
+    def consolidate_duplicate_vehicle_tours(self) -> int:
+        """Führt legacybedingte Doppeltouren je Fahrzeug und Tag zusammen.
+
+        Fahrerwechsel erzeugen niemals eine zweite Tour. Aufträge und
+        Fahrerabschnitte werden in die älteste Tour übernommen.
+        """
+        tours = [tour for tour in self.repository.get_all() if tour.vehicle_id]
+        groups: dict[tuple[date, int], list[Tour]] = {}
+        for tour in tours:
+            groups.setdefault((tour.tour_date, int(tour.vehicle_id)), []).append(tour)
+        merged = 0
+        for group in groups.values():
+            if len(group) < 2:
+                continue
+            group.sort(key=lambda item: (item.created_at, item.id))
+            primary = group[0]
+            existing_order_ids = {int(p.transport_order_id) for p in primary.positions}
+            next_position = max((int(p.position) for p in primary.positions), default=0)
+            assignments = list(primary.driver_assignments)
+            for duplicate in group[1:]:
+                for position in list(duplicate.positions):
+                    if int(position.transport_order_id) in existing_order_ids:
+                        duplicate.positions.remove(position)
+                        continue
+                    next_position += 1
+                    position.tour = primary
+                    position.position = next_position
+                    existing_order_ids.add(int(position.transport_order_id))
+                assignments.extend(list(duplicate.driver_assignments))
+                if not primary.driver_id and duplicate.driver_id:
+                    primary.driver_id = duplicate.driver_id
+                if not primary.trailer_id and duplicate.trailer_id:
+                    primary.trailer_id = duplicate.trailer_id
+                self._session.delete(duplicate)
+                merged += 1
+            if assignments:
+                unique = {}
+                for item in assignments:
+                    key = (item.driver_id, item.starts_at, item.ends_at)
+                    unique[key] = item
+                primary.driver_assignments.clear()
+                for sequence, item in enumerate(sorted(unique.values(), key=lambda value: value.starts_at), start=1):
+                    primary.driver_assignments.append(type(item)(
+                        driver_id=item.driver_id,
+                        starts_at=item.starts_at,
+                        ends_at=item.ends_at,
+                        change_base_location_id=item.change_base_location_id,
+                        change_base_name=item.change_base_name,
+                        change_reason=item.change_reason,
+                        sequence=sequence,
+                    ))
+        if merged:
+            self._session.commit()
+        return merged
+
     def synchronize_completed_tours(self) -> int:
         """Schließt Touren automatisch ab, sobald alle enthaltenen Aufträge erledigt sind.
 

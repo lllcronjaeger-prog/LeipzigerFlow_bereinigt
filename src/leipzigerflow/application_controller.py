@@ -8,6 +8,7 @@ from leipzigerflow.database.database import SessionLocal
 from leipzigerflow.models.auth import User
 from leipzigerflow.services.auth_bootstrap import seed_auth_defaults
 from leipzigerflow.services.user_session import UserSession
+from leipzigerflow.services.audit_context import set_user, clear_user
 from leipzigerflow.ui.dialogs.initial_admin_dialog import InitialAdminDialog
 from leipzigerflow.ui.dialogs.login_dialog import LoginDialog
 from leipzigerflow.ui.dialogs.password_dialog import ChangePasswordDialog
@@ -48,6 +49,7 @@ class ApplicationController(QObject):
                 return False
             user = dialog.authenticated_user
             self.user_session.start(user)
+            set_user(user.id, user.username, user.display_name)
             if user.must_change_password:
                 if ChangePasswordDialog(session, user, forced=True).exec() != QDialog.DialogCode.Accepted:
                     self.user_session.clear()
@@ -68,6 +70,7 @@ class ApplicationController(QObject):
             previous_window.hide()
         self.main_window = None
         self.user_session.clear()
+        clear_user()
 
         if self._login_and_show_main_window():
             if previous_window is not None:

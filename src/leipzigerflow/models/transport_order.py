@@ -96,6 +96,10 @@ class TransportOrder(Base):
     )
     loading_open_from: Mapped[time | None] = mapped_column(Time, nullable=True)
     loading_open_until: Mapped[time | None] = mapped_column(Time, nullable=True)
+    loading_original_from: Mapped[time | None] = mapped_column(Time, nullable=True)
+    loading_original_until: Mapped[time | None] = mapped_column(Time, nullable=True)
+    loading_window_status: Mapped[str] = mapped_column(String(30), default="Unverändert", nullable=False)
+    loading_window_change_reason: Mapped[str] = mapped_column(String(255), default="", nullable=False)
 
     unloading_location_id: Mapped[int] = mapped_column(
         ForeignKey("locations.id"),
@@ -116,6 +120,10 @@ class TransportOrder(Base):
     )
     unloading_open_from: Mapped[time | None] = mapped_column(Time, nullable=True)
     unloading_open_until: Mapped[time | None] = mapped_column(Time, nullable=True)
+    unloading_original_from: Mapped[time | None] = mapped_column(Time, nullable=True)
+    unloading_original_until: Mapped[time | None] = mapped_column(Time, nullable=True)
+    unloading_window_status: Mapped[str] = mapped_column(String(30), default="Unverändert", nullable=False)
+    unloading_window_change_reason: Mapped[str] = mapped_column(String(255), default="", nullable=False)
 
     weight_kg: Mapped[Decimal] = mapped_column(
         Numeric(12, 2),
@@ -132,6 +140,10 @@ class TransportOrder(Base):
         default=0,
         nullable=False,
     )
+    contractor_id: Mapped[int | None] = mapped_column(ForeignKey("contractors.id"), nullable=True, index=True)
+    contractor_raw: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    assignment_type: Mapped[str] = mapped_column(String(30), default="Eigener Fuhrpark", nullable=False, index=True)
+
     remarks: Mapped[str] = mapped_column(
         Text,
         default="",
@@ -151,6 +163,7 @@ class TransportOrder(Base):
     )
 
     customer = relationship("Customer")
+    contractor = relationship("Contractor", back_populates="orders")
     loading_location = relationship(
         "Location",
         foreign_keys=[loading_location_id],

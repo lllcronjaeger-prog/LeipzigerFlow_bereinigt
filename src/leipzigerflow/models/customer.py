@@ -133,6 +133,11 @@ class Customer(Base):
     )
 
     freight_payer = relationship("Customer", remote_side=[id], foreign_keys=[freight_payer_id])
+    locations = relationship(
+        "Location",
+        back_populates="customer",
+        foreign_keys="Location.customer_id",
+    )
 
     @property
     def display_name(self) -> str:

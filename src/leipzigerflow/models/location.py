@@ -1,7 +1,7 @@
 from enum import Enum
 
-from sqlalchemy import Boolean, Enum as SqlEnum, Integer, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Boolean, Enum as SqlEnum, ForeignKey, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from leipzigerflow.database.base import Base
 from leipzigerflow.models.location_type import LocationType
@@ -17,6 +17,25 @@ class Location(Base):
     location_type: Mapped[LocationType] = mapped_column(
         SqlEnum(LocationType),
         nullable=False,
+    )
+
+    customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customers.id"),
+        nullable=True,
+        index=True,
+    )
+
+    match_code: Mapped[str] = mapped_column(
+        String(100),
+        default="",
+        nullable=False,
+        index=True,
+    )
+
+    warehouse_group_id: Mapped[int | None] = mapped_column(
+        ForeignKey("warehouse_groups.id"),
+        nullable=True,
+        index=True,
     )
 
     name: Mapped[str] = mapped_column(
@@ -114,6 +133,25 @@ class Location(Base):
         nullable=False,
     )
 
+    customer = relationship(
+        "Customer",
+        back_populates="locations",
+        foreign_keys=[customer_id],
+    )
+
+    warehouse_group = relationship(
+        "WarehouseGroup",
+        back_populates="locations",
+        foreign_keys=[warehouse_group_id],
+    )
+
+    @property
+    def effective_opening_hours(self) -> str:
+        """Individuelle Öffnungszeit oder Standard der Lagergruppe."""
+        return self.opening_hours or (
+            self.warehouse_group.monday_hours if self.warehouse_group else ""
+        )
+
     @property
     def alias_list(self) -> list[str]:
         """Liefert die Aliases als Liste."""
@@ -175,6 +213,7 @@ class Location(Base):
 
         values = [
             self.name,
+            self.match_code,
             self.short_name,
             self.aliases,
             self.street,

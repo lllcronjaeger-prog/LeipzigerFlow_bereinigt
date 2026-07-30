@@ -37,9 +37,12 @@ class Driver(Base):
     absence_until: Mapped[date | None] = mapped_column(Date, nullable=True)
     absence_reason: Mapped[str] = mapped_column(String(100), default="")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    dispatch_group_id: Mapped[int | None] = mapped_column(ForeignKey("dispatch_groups.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
     home_base_location = relationship("Location", foreign_keys=[home_base_location_id])
+    dispatch_group = relationship("DispatchGroup", foreign_keys=[dispatch_group_id])
+    dispatch_groups = relationship("DispatchGroup", secondary="dispatch_group_drivers", back_populates="drivers", lazy="selectin")
     absences = relationship(
         "DriverAbsence",
         back_populates="driver",

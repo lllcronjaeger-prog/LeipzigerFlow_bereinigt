@@ -13,3 +13,6 @@ if DATABASE_CONFIG.mode == "sqlite":
 
 engine = create_engine(DATABASE_URL, **_engine_options)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+
+from leipzigerflow.services.audit_service import install_audit_listeners
+install_audit_listeners()

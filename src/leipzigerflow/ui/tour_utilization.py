@@ -97,6 +97,19 @@ def calculate_tour_time_utilization(tour, schedule) -> TourTimeUtilization:
             round((schedule.end_at - schedule.start_at).total_seconds() / 60),
         )
 
+    assignments = list(getattr(tour, "driver_assignments", []) or [])
+    if assignments:
+        # Bei Fahrerwechseln zählt für die Belastungsanzeige der längste
+        # tatsächliche Fahrerabschnitt, nicht die gesamte Fahrzeuglaufzeit.
+        segment_minutes = [
+            max(0, int((item.ends_at - item.starts_at).total_seconds() // 60))
+            for item in assignments
+            if getattr(item, "starts_at", None) and getattr(item, "ends_at", None)
+        ]
+        if segment_minutes:
+            work_minutes = max(segment_minutes)
+        daily_capacity = max(DEFAULT_DAILY_WORK_MINUTES, configured_minutes)
+
     deployment_days = max(1, len(positive_work_days) or len(duty_days) or 1)
     # Die Prozentanzeige bezieht sich immer auf einen Fahrertag mit 10 Stunden.
     # Mehrtägige Touren werden nicht gegen 20/30/... Stunden verglichen.

@@ -11,6 +11,7 @@ class LocationTableModel(QAbstractTableModel):
 
     HEADERS = [
         "Typ",
+        "Kunde",
         "Kurzname",
         "Name",
         "Ort",
@@ -44,29 +45,32 @@ class LocationTableModel(QAbstractTableModel):
                     return location.location_type.display_name
 
                 case 1:
-                    return location.short_name
+                    return location.customer.display_name if location.customer else "—"
 
                 case 2:
-                    return location.name
+                    return location.short_name
 
                 case 3:
+                    return location.name
+
+                case 4:
                     return (
                         f"{location.postal_code} "
                         f"{location.city}"
                     ).strip()
 
-                case 4:
+                case 5:
                     return location.contact_person
 
-                case 5:
+                case 6:
                     return location.phone
 
-                case 6:
+                case 7:
                     return "Ja" if location.active else "Nein"
 
         if role == Qt.TextAlignmentRole:
 
-            if index.column() == 6:
+            if index.column() == 7:
                 return Qt.AlignCenter
 
         return None
@@ -120,19 +124,23 @@ class LocationTableModel(QAbstractTableModel):
 
             case 1:
                 self._locations.sort(
-                    key=lambda l: (
-                        l.short_name or ""
-                    ).upper(),
+                    key=lambda l: (l.customer.display_name if l.customer else "").upper(),
                     reverse=reverse,
                 )
 
             case 2:
                 self._locations.sort(
-                    key=lambda l: l.name.upper(),
+                    key=lambda l: (l.short_name or "").upper(),
                     reverse=reverse,
                 )
 
             case 3:
+                self._locations.sort(
+                    key=lambda l: l.name.upper(),
+                    reverse=reverse,
+                )
+
+            case 4:
                 self._locations.sort(
                     key=lambda l: (
                         l.postal_code,
@@ -141,21 +149,19 @@ class LocationTableModel(QAbstractTableModel):
                     reverse=reverse,
                 )
 
-            case 4:
+            case 5:
                 self._locations.sort(
-                    key=lambda l: (
-                        l.contact_person or ""
-                    ).upper(),
+                    key=lambda l: (l.contact_person or "").upper(),
                     reverse=reverse,
                 )
 
-            case 5:
+            case 6:
                 self._locations.sort(
                     key=lambda l: l.phone,
                     reverse=reverse,
                 )
 
-            case 6:
+            case 7:
                 self._locations.sort(
                     key=lambda l: l.active,
                     reverse=reverse,

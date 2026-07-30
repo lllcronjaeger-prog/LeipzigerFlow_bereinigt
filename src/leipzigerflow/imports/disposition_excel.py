@@ -65,6 +65,7 @@ class DispositionImportRow:
     freight_payer: str = ""
     vehicle: str = ""
     driver: str = ""
+    subcontractor: str = ""
     loading_reference: str = ""
     unloading_reference: str = ""
     loading_meters: Decimal = Decimal("0")
@@ -252,6 +253,7 @@ def build_preview(path: str | Path) -> DispositionImportPreview:
             freight_payer=_clean(raw.get("freight_payer")),
             vehicle=_clean(raw.get("vehicle")),
             driver=_clean(raw.get("driver")),
+            subcontractor=_clean(raw.get("subcontractor")),
             loading_reference=_clean(raw.get("loading_reference")),
             unloading_reference=_clean(raw.get("unloading_reference")),
             loading_meters=_decimal(raw.get("loading_meters")),

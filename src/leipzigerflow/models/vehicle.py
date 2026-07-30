@@ -64,12 +64,15 @@ class Vehicle(Base):
     remarks: Mapped[str] = mapped_column(Text, default="", nullable=False)
     trailer_id: Mapped[int | None] = mapped_column(ForeignKey("trailers.id"), nullable=True, index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    dispatch_group_id: Mapped[int | None] = mapped_column(ForeignKey("dispatch_groups.id"), nullable=True, index=True)
 
     # Legacy-Feld für bestehende Datenbanken.
     is_refrigerated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     trailer = relationship("Trailer", foreign_keys=[trailer_id])
     home_base_location = relationship("Location", foreign_keys=[home_base_location_id])
+    dispatch_group = relationship("DispatchGroup", foreign_keys=[dispatch_group_id])
+    dispatch_groups = relationship("DispatchGroup", secondary="dispatch_group_vehicles", back_populates="vehicles", lazy="selectin")
     absences = relationship(
         "VehicleAbsence",
         back_populates="vehicle",
@@ -77,6 +80,13 @@ class Vehicle(Base):
         order_by="VehicleAbsence.starts_at",
     )
     tours = relationship("Tour", foreign_keys="Tour.vehicle_id", viewonly=True)
+    resource_assignments = relationship(
+        "VehicleResourceAssignment",
+        back_populates="vehicle",
+        cascade="all, delete-orphan",
+        order_by="VehicleResourceAssignment.valid_from",
+        lazy="selectin",
+    )
     staffing_profile = relationship(
         "VehicleStaffingProfile",
         back_populates="vehicle",

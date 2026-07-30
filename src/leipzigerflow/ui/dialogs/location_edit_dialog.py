@@ -18,6 +18,7 @@ class LocationEditDialog(QDialog):
         self,
         location: Location | None = None,
         parent=None,
+        customers=None,
     ):
         super().__init__(parent)
 
@@ -34,6 +35,10 @@ class LocationEditDialog(QDialog):
         form = QFormLayout()
 
         self.cmb_type = QComboBox()
+        self.cmb_customer = QComboBox()
+        self.cmb_customer.addItem("— kein Kunde —", None)
+        for customer in customers or []:
+            self.cmb_customer.addItem(customer.display_name, customer.id)
 
         for location_type in LocationType:
             self.cmb_type.addItem(
@@ -83,6 +88,7 @@ class LocationEditDialog(QDialog):
         self.chk_active.setChecked(True)
 
         form.addRow("Typ", self.cmb_type)
+        form.addRow("Zugehöriger Kunde", self.cmb_customer)
         form.addRow("Name", self.edit_name)
         form.addRow("Kurzname", self.edit_short_name)
         form.addRow("Suchbegriffe", self.edit_aliases)
@@ -121,6 +127,10 @@ class LocationEditDialog(QDialog):
             if index >= 0:
                 self.cmb_type.setCurrentIndex(index)
 
+            customer_index = self.cmb_customer.findData(location.customer_id)
+            if customer_index >= 0:
+                self.cmb_customer.setCurrentIndex(customer_index)
+
             self.edit_name.setText(location.name)
             self.edit_short_name.setText(location.short_name)
             self.edit_aliases.setText(location.aliases)
@@ -151,6 +161,7 @@ class LocationEditDialog(QDialog):
 
         return {
             "location_type": self.cmb_type.currentData(),
+            "customer_id": self.cmb_customer.currentData(),
             "name": self.edit_name.text().strip(),
             "short_name": self.edit_short_name.text().strip(),
             "aliases": self.edit_aliases.text().strip(),

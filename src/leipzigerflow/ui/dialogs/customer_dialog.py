@@ -106,6 +106,7 @@ class CustomerDialog(QDialog):
         self.btn_edit = QPushButton("Bearbeiten")
         self.btn_delete = QPushButton("Löschen")
 
+        action_layout.addWidget(self.btn_import)
         action_layout.addWidget(self.btn_new)
         action_layout.addWidget(self.btn_edit)
         action_layout.addWidget(self.btn_delete)

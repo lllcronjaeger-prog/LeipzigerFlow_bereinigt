@@ -33,12 +33,26 @@ def migrate_database(engine: Engine) -> None:
         _add(statements,"transport_orders",columns,"unloading_time_flexible","BOOLEAN NOT NULL DEFAULT 1")
         _add(statements,"transport_orders",columns,"unloading_open_from","TIME")
         _add(statements,"transport_orders",columns,"unloading_open_until","TIME")
+        _add(statements,"transport_orders",columns,"loading_original_from","TIME")
+        _add(statements,"transport_orders",columns,"loading_original_until","TIME")
+        _add(statements,"transport_orders",columns,"unloading_original_from","TIME")
+        _add(statements,"transport_orders",columns,"unloading_original_until","TIME")
+        _add(statements,"transport_orders",columns,"loading_window_status","VARCHAR(30) NOT NULL DEFAULT 'Unverändert'")
+        _add(statements,"transport_orders",columns,"unloading_window_status","VARCHAR(30) NOT NULL DEFAULT 'Unverändert'")
+        _add(statements,"transport_orders",columns,"loading_window_change_reason","VARCHAR(255) NOT NULL DEFAULT ''")
+        _add(statements,"transport_orders",columns,"unloading_window_change_reason","VARCHAR(255) NOT NULL DEFAULT ''")
+        _add(statements,"transport_orders",columns,"contractor_id","INTEGER REFERENCES contractors(id)")
+        _add(statements,"transport_orders",columns,"contractor_raw","VARCHAR(255) NOT NULL DEFAULT ''")
+        _add(statements,"transport_orders",columns,"assignment_type","VARCHAR(30) NOT NULL DEFAULT 'Eigener Fuhrpark'")
 
     if "locations" in tables:
         columns = {c["name"] for c in inspector.get_columns("locations")}
         _add(statements,"locations",columns,"loading_duration_minutes","INTEGER NOT NULL DEFAULT 60")
         _add(statements,"locations",columns,"unloading_duration_minutes","INTEGER NOT NULL DEFAULT 60")
         _add(statements,"locations",columns,"time_window_booking_required","BOOLEAN NOT NULL DEFAULT 0")
+        _add(statements,"locations",columns,"customer_id","INTEGER REFERENCES customers(id)")
+        _add(statements,"locations",columns,"match_code","VARCHAR(100) NOT NULL DEFAULT ''")
+        _add(statements,"locations",columns,"warehouse_group_id","INTEGER REFERENCES warehouse_groups(id)")
 
 
     if "drivers" in tables:
@@ -59,6 +73,7 @@ def migrate_database(engine: Engine) -> None:
         _add(statements,"drivers",columns,"allowed_operation","VARCHAR(20) NOT NULL DEFAULT 'Beides'")
         _add(statements,"drivers",columns,"weekly_target_minutes","INTEGER NOT NULL DEFAULT 2880")
         _add(statements,"drivers",columns,"double_week_limit_minutes","INTEGER NOT NULL DEFAULT 5760")
+        _add(statements,"drivers",columns,"dispatch_group_id","INTEGER REFERENCES dispatch_groups(id)")
 
     if "vehicles" in tables:
         columns = {c["name"] for c in inspector.get_columns("vehicles")}
@@ -75,14 +90,45 @@ def migrate_database(engine: Engine) -> None:
         _add(statements,"vehicles",columns,"home_base_location_id","INTEGER REFERENCES locations(id)")
         _add(statements,"vehicles",columns,"daily_return_required","BOOLEAN NOT NULL DEFAULT 1")
         _add(statements,"vehicles",columns,"overnight_away_allowed","BOOLEAN NOT NULL DEFAULT 0")
+        _add(statements,"vehicles",columns,"dispatch_group_id","INTEGER REFERENCES dispatch_groups(id)")
+
+    if "users" in tables:
+        columns = {c["name"] for c in inspector.get_columns("users")}
+        _add(statements,"users",columns,"default_dispatch_group_id","INTEGER REFERENCES dispatch_groups(id)")
 
     if "tours" in tables:
         columns = {c["name"] for c in inspector.get_columns("tours")}
         _add(statements,"tours",columns,"planned_start_time","TIME")
         _add(statements,"tours",columns,"trailer_id","INTEGER REFERENCES trailers(id)")
         _add(statements,"tours",columns,"planning_locked","BOOLEAN NOT NULL DEFAULT 0")
+        _add(statements,"tours",columns,"contractor_id","INTEGER REFERENCES contractors(id)")
+        _add(statements,"tours",columns,"dispatch_group_id","INTEGER REFERENCES dispatch_groups(id)")
+        _add(statements,"tours",columns,"planning_status","VARCHAR(30) NOT NULL DEFAULT 'Geplant'")
+        _add(statements,"tours",columns,"priority","INTEGER NOT NULL DEFAULT 5")
+        _add(statements,"tours",columns,"tour_color","VARCHAR(20) NOT NULL DEFAULT ''")
+
+    # PR-015: Many-to-many-Zuordnungen und Gruppenregeln auch für bestehende Datenbanken.
+    create_statements = [
+        "CREATE TABLE IF NOT EXISTS dispatch_group_vehicles (dispatch_group_id INTEGER NOT NULL REFERENCES dispatch_groups(id) ON DELETE CASCADE, vehicle_id INTEGER NOT NULL REFERENCES vehicles(id) ON DELETE CASCADE, PRIMARY KEY (dispatch_group_id, vehicle_id))",
+        "CREATE TABLE IF NOT EXISTS dispatch_group_trailers (dispatch_group_id INTEGER NOT NULL REFERENCES dispatch_groups(id) ON DELETE CASCADE, trailer_id INTEGER NOT NULL REFERENCES trailers(id) ON DELETE CASCADE, PRIMARY KEY (dispatch_group_id, trailer_id))",
+        "CREATE TABLE IF NOT EXISTS dispatch_group_drivers (dispatch_group_id INTEGER NOT NULL REFERENCES dispatch_groups(id) ON DELETE CASCADE, driver_id INTEGER NOT NULL REFERENCES drivers(id) ON DELETE CASCADE, PRIMARY KEY (dispatch_group_id, driver_id))",
+        "CREATE TABLE IF NOT EXISTS dispatch_group_contractors (dispatch_group_id INTEGER NOT NULL REFERENCES dispatch_groups(id) ON DELETE CASCADE, contractor_id INTEGER NOT NULL REFERENCES contractors(id) ON DELETE CASCADE, PRIMARY KEY (dispatch_group_id, contractor_id))",
+        "CREATE TABLE IF NOT EXISTS dispatch_group_rules (id INTEGER PRIMARY KEY, dispatch_group_id INTEGER NOT NULL REFERENCES dispatch_groups(id) ON DELETE CASCADE, entity_type VARCHAR(30) NOT NULL DEFAULT 'Fahrzeug', field_name VARCHAR(50) NOT NULL DEFAULT 'MatchCode', operator VARCHAR(30) NOT NULL DEFAULT 'enthält', comparison_value VARCHAR(255) NOT NULL DEFAULT '', priority INTEGER NOT NULL DEFAULT 100, active BOOLEAN NOT NULL DEFAULT 1)",
+        "CREATE TABLE IF NOT EXISTS tour_driver_assignments (id INTEGER PRIMARY KEY, tour_id INTEGER NOT NULL REFERENCES tours(id) ON DELETE CASCADE, driver_id INTEGER NOT NULL REFERENCES drivers(id), starts_at DATETIME NOT NULL, ends_at DATETIME NOT NULL, change_base_location_id INTEGER REFERENCES locations(id), change_base_name VARCHAR(120) NOT NULL DEFAULT '', change_reason VARCHAR(255) NOT NULL DEFAULT '', sequence INTEGER NOT NULL DEFAULT 1, created_at DATETIME NOT NULL)",
+        "CREATE INDEX IF NOT EXISTS ix_tour_driver_assignments_tour_id ON tour_driver_assignments(tour_id)",
+        "CREATE INDEX IF NOT EXISTS ix_tour_driver_assignments_driver_id ON tour_driver_assignments(driver_id)",
+        "CREATE TABLE IF NOT EXISTS vehicle_resource_assignments (id INTEGER PRIMARY KEY, vehicle_id INTEGER NOT NULL REFERENCES vehicles(id) ON DELETE CASCADE, driver_id INTEGER REFERENCES drivers(id), trailer_id INTEGER REFERENCES trailers(id), valid_from DATE NOT NULL, valid_until DATE, base_location_id INTEGER REFERENCES locations(id), base_name VARCHAR(120) NOT NULL DEFAULT '', reason VARCHAR(255) NOT NULL DEFAULT '', active BOOLEAN NOT NULL DEFAULT 1, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)",
+        "CREATE INDEX IF NOT EXISTS ix_vehicle_resource_assignments_vehicle_id ON vehicle_resource_assignments(vehicle_id)",
+        "CREATE INDEX IF NOT EXISTS ix_vehicle_resource_assignments_driver_id ON vehicle_resource_assignments(driver_id)",
+        "CREATE INDEX IF NOT EXISTS ix_vehicle_resource_assignments_validity ON vehicle_resource_assignments(valid_from, valid_until)"
+    ]
+    if "dispatch_groups" in tables:
+        columns = {c["name"] for c in inspector.get_columns("dispatch_groups")}
+        _add(statements, "dispatch_groups", columns, "is_default", "BOOLEAN NOT NULL DEFAULT 0")
 
     with engine.begin() as connection:
+        for statement in create_statements:
+            connection.execute(text(statement))
         for statement in statements:
             connection.execute(text(statement))
         refreshed=inspect(engine)

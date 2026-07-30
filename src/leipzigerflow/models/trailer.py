@@ -43,6 +43,7 @@ class Trailer(Base):
         order_by="TrailerAbsence.starts_at",
     )
     tours = relationship("Tour", foreign_keys="Tour.trailer_id", viewonly=True)
+    dispatch_groups = relationship("DispatchGroup", secondary="dispatch_group_trailers", back_populates="trailers", lazy="selectin")
 
     @property
     def is_mega(self) -> bool:

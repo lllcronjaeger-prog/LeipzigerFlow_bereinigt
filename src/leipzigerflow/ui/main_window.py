@@ -32,6 +32,12 @@ from leipzigerflow.services.auth_service import AuthService
 from leipzigerflow.models.auth import User
 from leipzigerflow.ui.dialogs.password_dialog import ChangePasswordDialog
 from leipzigerflow.ui.dialogs.user_management_dialog import UserManagementDialog
+from leipzigerflow.ui.dialogs.audit_log_dialog import AuditLogDialog
+from leipzigerflow.ui.dialogs.warehouse_dialog import WarehouseDialog
+from leipzigerflow.ui.dialogs.warehouse_group_dialog import WarehouseGroupDialog
+from leipzigerflow.ui.dialogs.contractor_dialog import ContractorDialog
+from leipzigerflow.ui.dialogs.dispatch_group_dialog import DispatchGroupDialog
+from leipzigerflow.ui.dialogs.subcontractor_orders_dialog import SubcontractorOrdersDialog
 
 
 class MainWindow(QMainWindow):
@@ -145,6 +151,11 @@ class MainWindow(QMainWindow):
             self._self_managed_factory(LocationDialog),
         )
         self.window_manager.register(
+            "warehouses",
+            "Läger · LeipzigerFlow",
+            self._self_managed_factory(WarehouseDialog),
+        )
+        self.window_manager.register(
             "vehicles",
             "Zugmaschinen · LeipzigerFlow",
             self._self_managed_factory(VehicleDialog),
@@ -178,6 +189,22 @@ class MainWindow(QMainWindow):
 
         self.action_locations = QAction("Standorte", self)
         self.action_locations.triggered.connect(self.open_location_dialog)
+
+        self.action_warehouses = QAction("📦 Läger", self)
+        self.action_warehouses.triggered.connect(self.open_warehouse_dialog)
+
+        self.action_warehouse_groups = QAction("🏷️ Lagergruppen", self)
+        self.action_warehouse_groups.triggered.connect(self.open_warehouse_groups)
+
+        self.action_contractors = QAction("🤝 Unternehmer", self)
+        self.action_contractors.triggered.connect(self.open_contractors)
+        self.action_dispatch_groups = QAction("🗂️ Dispositionsgruppen", self)
+        self.action_dispatch_groups.triggered.connect(self.open_dispatch_groups)
+        self.action_subcontractor_orders = QAction("🤝 Subunternehmer-Aufträge", self)
+        self.action_subcontractor_orders.triggered.connect(self.open_subcontractor_orders)
+
+        self.action_audit_log = QAction("📝 Änderungshistorie", self)
+        self.action_audit_log.triggered.connect(self.open_audit_log)
 
         self.action_customer_import = QAction("Kunden aus Excel importieren", self)
         self.action_customer_import.triggered.connect(self.open_customer_import)
@@ -244,6 +271,10 @@ class MainWindow(QMainWindow):
         master_menu = menu.addMenu("Stammdaten")
         master_menu.addAction(self.action_customers)
         master_menu.addAction(self.action_locations)
+        master_menu.addAction(self.action_warehouses)
+        master_menu.addAction(self.action_warehouse_groups)
+        master_menu.addAction(self.action_contractors)
+        master_menu.addAction(self.action_dispatch_groups)
         master_menu.addSeparator()
         master_menu.addAction(self.action_drivers)
         master_menu.addAction(self.action_vehicles)
@@ -259,6 +290,7 @@ class MainWindow(QMainWindow):
         planning_menu = menu.addMenu("Planung")
         planning_menu.addAction(self.action_transport_orders)
         planning_menu.addAction(self.action_tours)
+        planning_menu.addAction(self.action_subcontractor_orders)
         planning_menu.addSeparator()
         planning_menu.addAction(self.action_planning_board)
 
@@ -285,6 +317,7 @@ class MainWindow(QMainWindow):
 
         extras_menu = menu.addMenu("Extras")
         extras_menu.addAction(self.action_user_management)
+        extras_menu.addAction(self.action_audit_log)
         extras_menu.addSeparator()
         extras_menu.addAction(self.action_database_settings)
 
@@ -299,6 +332,7 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addAction(self.action_customers)
         toolbar.addAction(self.action_locations)
+        toolbar.addAction(self.action_warehouses)
         toolbar.addSeparator()
         toolbar.addAction(self.action_drivers)
         toolbar.addAction(self.action_vehicles)
@@ -338,6 +372,8 @@ class MainWindow(QMainWindow):
             "customers.view": (self.action_customers,),
             "fleet.view": (
                 self.action_locations,
+                self.action_warehouses,
+                self.action_warehouse_groups,
                 self.action_drivers,
                 self.action_vehicles,
                 self.action_trailers,
@@ -350,7 +386,7 @@ class MainWindow(QMainWindow):
             "orders.view": (self.action_transport_orders, self.action_tours),
             "planning.view": (self.action_planning_board,),
             "ai.use": (self.action_ai_assistant,),
-            "users.manage": (self.action_user_management,),
+            "users.manage": (self.action_user_management, self.action_audit_log),
             "api.manage": (self.action_ai_settings,),
             "settings.edit": (self.action_database_settings,),
         }
@@ -427,6 +463,44 @@ class MainWindow(QMainWindow):
 
     def open_location_dialog(self):
         self.window_manager.open("locations")
+
+    def open_warehouse_dialog(self):
+        self.window_manager.open("warehouses")
+
+    def open_warehouse_groups(self):
+        session = SessionLocal()
+        try:
+            WarehouseGroupDialog(session, parent=self).exec()
+        finally:
+            session.close()
+
+    def open_contractors(self):
+        session = SessionLocal()
+        try:
+            ContractorDialog(session, parent=self).exec()
+        finally:
+            session.close()
+
+    def open_dispatch_groups(self):
+        session = SessionLocal()
+        try:
+            DispatchGroupDialog(session, parent=self).exec()
+        finally:
+            session.close()
+
+    def open_subcontractor_orders(self):
+        session = SessionLocal()
+        try:
+            SubcontractorOrdersDialog(session, parent=self).exec()
+        finally:
+            session.close()
+
+    def open_audit_log(self):
+        session = SessionLocal()
+        try:
+            AuditLogDialog(session, parent=self).exec()
+        finally:
+            session.close()
 
     def open_driver_dialog(self):
         self.window_manager.open("drivers")

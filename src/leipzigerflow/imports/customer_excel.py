@@ -14,6 +14,7 @@ _HEADER_ALIASES = {
     "adresse": "address",
     "hauptkunde": "freight_payer",
     "frachtzahler": "freight_payer",
+    "hinweis": "notes",
 }
 _COUNTRY_NAMES = {
     "D": "Deutschland", "DE": "Deutschland", "DEU": "Deutschland",
@@ -34,6 +35,7 @@ class CustomerImportRow:
     country: str = "Deutschland"
     freight_payer_match_code: str = ""
     freight_payer_name: str = ""
+    notes: str = ""
     status: str = "Neu"
     errors: list[str] = field(default_factory=list)
 
@@ -148,6 +150,7 @@ def build_preview(path: str | Path) -> CustomerImportPreview:
             match_code=raw.get("match_code", "").strip(),
             freight_payer_match_code=freight_code,
             freight_payer_name=freight_name,
+            notes=raw.get("notes", "").strip(),
             **parse_address(raw.get("address", "")),
         )
         if not row.name: row.errors.append("Name fehlt")

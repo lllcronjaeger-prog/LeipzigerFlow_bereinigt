@@ -42,9 +42,20 @@ class TourWarningEngine:
         return self._deduplicate(warnings)
 
     def _check_driver(self, tour, reference_date, warnings):
+        assignments = list(getattr(tour, "driver_assignments", []) or [])
         driver = getattr(tour, "driver", None)
-        if driver is None:
+        if driver is None and not assignments:
             warnings.append(PlanningWarning("driver_missing", "Fahrer fehlt")); return
+        if assignments:
+            ordered = sorted(assignments, key=lambda item: item.starts_at)
+            for index, item in enumerate(ordered):
+                if item.ends_at <= item.starts_at:
+                    warnings.append(PlanningWarning("driver_segment_invalid", "Fahrerabschnitt hat eine ungültige Zeit", WarningSeverity.ERROR))
+                if index and ordered[index - 1].ends_at != item.starts_at:
+                    warnings.append(PlanningWarning("driver_segment_gap", "Fahrerabschnitte sind nicht lückenlos", WarningSeverity.ERROR))
+                if index and not (item.change_base_location_id or str(item.change_base_name or "").strip()):
+                    warnings.append(PlanningWarning("driver_change_without_base", "Fahrerwechsel ohne Basis", WarningSeverity.ERROR))
+            driver = getattr(ordered[0], "driver", None) or driver
         if not getattr(driver, "active", True):
             warnings.append(PlanningWarning("driver_inactive", "Fahrer ist inaktiv", WarningSeverity.ERROR))
         valid_until = getattr(driver, "license_valid_until", None)

@@ -1,3 +1,12 @@
+# 2026.21.0
+
+- Neuer Stammdatenbereich **Läger** sowie zentrale **Lagergruppen** mit Standard-Öffnungszeiten.
+- Dispoplan-Zeitfenster werden grundsätzlich flexibel übernommen; Originalwerte und Verschiebungsstatus bleiben erhalten.
+- Automatische MatchCode-Erzeugung für neutrale Läger.
+- Kundenstandorte und neutrale Läger werden beim Dispositionsimport getrennt.
+- Zentrale, benutzerbezogene Änderungshistorie für Anlage, Änderung und Löschung.
+- Neue visuelle Symbole für Läger, Lagergruppen und Historie.
+
 # Changelog
 
 ## 2026.20.1 – Kundenimport und Fahrer-Abwesenheitsplanung
