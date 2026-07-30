@@ -6,6 +6,7 @@ from leipzigerflow.database.base import Base
 class Driver(Base):
     __tablename__ = "drivers"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    match_code: Mapped[str] = mapped_column(String(100), default="", index=True)
     first_name: Mapped[str] = mapped_column(String(100), default="")
     last_name: Mapped[str] = mapped_column(String(100), default="")
     street: Mapped[str] = mapped_column(String(150), default="")
@@ -16,6 +17,8 @@ class Driver(Base):
     phone: Mapped[str] = mapped_column(String(50), default="")
     mobile: Mapped[str] = mapped_column(String(50), default="")
     email: Mapped[str] = mapped_column(String(150), default="")
+    contact_raw: Mapped[str] = mapped_column(String(500), default="")
+    import_source: Mapped[str] = mapped_column(String(100), default="")
     birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     license_number: Mapped[str] = mapped_column(String(100), default="")
     license_classes: Mapped[str] = mapped_column(String(100), default="")
@@ -44,5 +47,5 @@ class Driver(Base):
         return ", ".join(p for p in (f"{self.street} {self.house_number}".strip(), f"{self.postal_code} {self.city}".strip(), self.country) if p)
     @property
     def search_text(self):
-        return " ".join(str(v) for v in (self.full_name,self.city,self.phone,self.mobile,self.email,self.license_number,self.license_classes,self.absence_reason) if v).lower()
+        return " ".join(str(v) for v in (self.match_code,self.full_name,self.city,self.phone,self.mobile,self.email,self.license_number,self.license_classes,self.absence_reason) if v).lower()
     def __repr__(self): return f"<Driver(id={self.id}, name={self.full_name!r})>"

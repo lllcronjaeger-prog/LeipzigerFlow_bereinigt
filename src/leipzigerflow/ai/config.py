@@ -26,8 +26,8 @@ class AiConfig:
     model: str = OLLAMA_DEFAULT_MODEL
     base_url: str = OLLAMA_DEFAULT_BASE_URL
     api_key_env: str = "OPENAI_API_KEY"
-    timeout_seconds: int = 120
-    max_context_records: int = 40
+    timeout_seconds: int = 600
+    max_context_records: int = 20
     enabled: bool = False
 
 

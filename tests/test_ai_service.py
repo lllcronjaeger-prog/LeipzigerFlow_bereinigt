@@ -16,6 +16,9 @@ class EmptySession:
     def scalars(self, _statement):
         return EmptyScalars()
 
+    def scalar(self, _statement):
+        return 0
+
 
 class StubProvider(AiProvider):
     def __init__(self):
@@ -51,3 +54,35 @@ def test_ai_service_tests_provider_connection():
     service = AiService(EmptySession(), AiConfig(enabled=True), provider)
     service.test_connection()
     assert provider.tested is True
+
+
+def test_ai_service_streams_provider_answer():
+    provider = StubProvider()
+    config = replace(AiConfig(), enabled=True)
+    chunks: list[str] = []
+    answer = AiService(EmptySession(), config, provider).ask_stream(
+        "Welche Tour ist kritisch?",
+        [],
+        chunks.append,
+    )
+    assert answer == "Analyse abgeschlossen"
+    assert chunks == ["Analyse abgeschlossen"]
+
+
+class ScalarResultSession(EmptySession):
+    def scalar(self, _statement):
+        return 4
+
+
+def test_ai_service_answers_simple_count_without_provider_call():
+    provider = StubProvider()
+    config = replace(AiConfig(), enabled=True)
+    chunks: list[str] = []
+    answer = AiService(ScalarResultSession(), config, provider).ask_stream(
+        "Wie viele Fahrzeuge habe ich?",
+        [],
+        chunks.append,
+    )
+    assert "4 aktive Fahrzeuge" in answer
+    assert chunks == [answer]
+    assert provider.messages == []

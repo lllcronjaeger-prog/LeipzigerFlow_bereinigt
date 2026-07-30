@@ -1,7 +1,7 @@
 from pathlib import Path
 
 APP_NAME = "LeipzigerFlow"
-VERSION = "2026.19.2"
+VERSION = "2026.20.0"
 
 BASE_DIR = Path(__file__).resolve().parents[3]
 

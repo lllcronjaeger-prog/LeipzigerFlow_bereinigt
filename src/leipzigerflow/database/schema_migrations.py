@@ -41,6 +41,9 @@ def migrate_database(engine: Engine) -> None:
 
     if "drivers" in tables:
         columns = {c["name"] for c in inspector.get_columns("drivers")}
+        _add(statements,"drivers",columns,"match_code","VARCHAR(100) NOT NULL DEFAULT ''")
+        _add(statements,"drivers",columns,"contact_raw","VARCHAR(500) NOT NULL DEFAULT ''")
+        _add(statements,"drivers",columns,"import_source","VARCHAR(100) NOT NULL DEFAULT ''")
         _add(statements,"drivers",columns,"driver_card_valid_until","DATE")
         _add(statements,"drivers",columns,"module_95_valid_until","DATE")
         _add(statements,"drivers",columns,"adr_valid_until","DATE")

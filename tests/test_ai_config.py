@@ -39,3 +39,9 @@ def test_invalid_ai_config_falls_back_to_defaults(tmp_path: Path):
 def test_provider_defaults_are_available():
     assert provider_defaults("ollama") == ("qwen3:4b", "http://localhost:11434")
     assert provider_defaults("openai") == ("gpt-5-mini", "https://api.openai.com/v1")
+
+
+def test_ai_config_uses_longer_local_generation_timeout_and_small_context():
+    config = AiConfig()
+    assert config.timeout_seconds == 600
+    assert config.max_context_records == 20

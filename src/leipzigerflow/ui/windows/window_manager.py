@@ -67,7 +67,13 @@ class ManagedToolWindow(QMainWindow):
             self.restoreGeometry(geometry)
             self._ensure_visible_on_screen()
             return
-        self.resize(max(1000, self._content.sizeHint().width()), max(700, self._content.sizeHint().height()))
+        preferred = getattr(self._content, "preferred_workspace_size", None)
+        if preferred is not None:
+            width, height = preferred
+        else:
+            width = max(1200, self._content.minimumSizeHint().width(), self._content.sizeHint().width())
+            height = max(760, self._content.minimumSizeHint().height(), self._content.sizeHint().height())
+        self.resize(width, height)
 
     def _ensure_visible_on_screen(self) -> None:
         screens = QGuiApplication.screens()
@@ -112,6 +118,7 @@ class ManagedToolWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
         self._settings.setValue(f"windows/{self._key}/geometry", self.saveGeometry())
+        self._settings.sync()
         self.closing.emit(self._key)
         self._run_cleanup()
         super().closeEvent(event)

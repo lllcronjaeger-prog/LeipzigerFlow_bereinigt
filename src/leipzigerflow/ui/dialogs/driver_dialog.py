@@ -18,6 +18,7 @@ from leipzigerflow.services.driver_service import (
     DriverService,
 )
 from leipzigerflow.services.location_service import LocationService
+from leipzigerflow.ui.dialogs.driver_import_dialog import DriverImportDialog
 from leipzigerflow.ui.dialogs.driver_edit_dialog import (
     DriverEditDialog,
 )
@@ -116,10 +117,12 @@ class DriverDialog(QDialog):
 
         action_layout = QHBoxLayout()
 
+        self.btn_import = QPushButton("Excel-Import")
         self.btn_new = QPushButton("Neu")
         self.btn_edit = QPushButton("Bearbeiten")
         self.btn_delete = QPushButton("Archivieren/Aktivieren")
 
+        action_layout.addWidget(self.btn_import)
         action_layout.addWidget(
             self.btn_new
         )
@@ -154,6 +157,8 @@ class DriverDialog(QDialog):
         self.edit_search.textChanged.connect(
             self._search
         )
+
+        self.btn_import.clicked.connect(self._import_drivers)
 
         self.btn_new.clicked.connect(
             self._new_driver
@@ -231,6 +236,12 @@ class DriverDialog(QDialog):
         return self.table_model.driver_at(
             rows[0].row()
         )
+
+
+    def _import_drivers(self):
+        dialog = DriverImportDialog(self.service.repository._session, self)
+        if dialog.exec():
+            self._load_drivers()
 
     # ---------------------------------------------------------
     # Neu

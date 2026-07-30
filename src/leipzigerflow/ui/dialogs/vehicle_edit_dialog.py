@@ -1,6 +1,7 @@
 from datetime import time
 
-from PySide6.QtCore import QDate, QTime
+from PySide6.QtCore import QByteArray, QDate, QSettings, QTime
+from PySide6.QtGui import QCloseEvent, QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
     QFormLayout, QGridLayout, QGroupBox, QLineEdit, QPlainTextEdit,
@@ -12,16 +13,18 @@ from leipzigerflow.ui.widgets.resource_absence_editor import ResourceAbsenceEdit
 
 
 class VehicleEditDialog(QDialog):
+    SETTINGS_KEY = "vehicle_edit"
     STATUSES = ["Frei", "Unterwegs", "Auf dem Hof", "Reserviert", "Werkstatt", "Defekt"]
 
     def __init__(self, vehicle: Vehicle | None = None, trailers=None, drivers=None, locations=None, parent=None):
         super().__init__(parent)
         self.vehicle = vehicle
+        self._settings = QSettings("LeipzigerFlow", "VehicleManagement")
         self.trailers = trailers or []
         self.drivers = drivers or []
         self.locations = locations or []
         self.setWindowTitle("Zugmaschine bearbeiten" if vehicle else "Neue Zugmaschine")
-        self.resize(930, 620); self.setMinimumSize(800, 540)
+        self.setMinimumSize(900, 620)
 
         root = QVBoxLayout(self)
         tabs = QTabWidget(); root.addWidget(tabs, 1)
@@ -113,6 +116,43 @@ class VehicleEditDialog(QDialog):
                 self.shift_start.setTime(QTime(profile.first_shift_start.hour, profile.first_shift_start.minute))
                 self.shift_hours.setValue(max(1, round(profile.shift_minutes / 60)))
         self._sync_operation_rules(self.operation_type.currentText())
+        self._restore_geometry()
+
+
+    def _restore_geometry(self) -> None:
+        geometry = self._settings.value(f"{self.SETTINGS_KEY}/geometry")
+        if isinstance(geometry, QByteArray) and not geometry.isEmpty():
+            self.restoreGeometry(geometry)
+            self._ensure_visible_on_screen()
+        else:
+            self.resize(1100, 760)
+
+    def _ensure_visible_on_screen(self) -> None:
+        screens = QGuiApplication.screens()
+        if not screens:
+            return
+        frame = self.frameGeometry()
+        if any(screen.availableGeometry().intersects(frame) for screen in screens):
+            return
+        target = QGuiApplication.primaryScreen().availableGeometry()
+        self.resize(min(self.width(), target.width()), min(self.height(), target.height()))
+        self.move(target.center() - self.rect().center())
+
+    def _save_geometry(self) -> None:
+        self._settings.setValue(f"{self.SETTINGS_KEY}/geometry", self.saveGeometry())
+        self._settings.sync()
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
+        self._save_geometry()
+        super().closeEvent(event)
+
+    def accept(self) -> None:
+        self._save_geometry()
+        super().accept()
+
+    def reject(self) -> None:
+        self._save_geometry()
+        super().reject()
 
     def _sync_operation_rules(self, value: str) -> None:
         is_local = value == VehicleOperationType.LOCAL.value

@@ -1,3 +1,4 @@
+from PySide6.QtCore import QByteArray, QSettings
 from PySide6.QtWidgets import QCheckBox,QDialog,QFileDialog,QHBoxLayout,QLabel,QLineEdit,QMessageBox,QPushButton,QTableView,QVBoxLayout
 from leipzigerflow.database.session import SessionLocal
 from leipzigerflow.imports.fleet_excel import export_rows,import_dicts,parse_date
@@ -11,8 +12,15 @@ from leipzigerflow.ui.dialogs.vehicle_edit_dialog import VehicleEditDialog
 from leipzigerflow.ui.models.vehicle_table_model import VehicleTableModel
 
 class VehicleDialog(QDialog):
+    preferred_workspace_size = (1400, 820)
+
     def __init__(self,parent=None):
-        super().__init__(parent);self.setWindowTitle('Zugmaschinenverwaltung');self.resize(1200,700);self.session=SessionLocal();self.service=VehicleService(self.session);self.trailer_service=TrailerService(self.session);self.driver_service=DriverService(self.session);self.location_service=LocationService(self.session);self.model=VehicleTableModel();self._build_ui();self.refresh_table()
+        super().__init__(parent)
+        self.setWindowTitle('Zugmaschinenverwaltung')
+        self.setMinimumSize(1100,680)
+        self.resize(*self.preferred_workspace_size)
+        self._settings=QSettings('LeipzigerFlow','VehicleManagement')
+        self.session=SessionLocal();self.service=VehicleService(self.session);self.trailer_service=TrailerService(self.session);self.driver_service=DriverService(self.session);self.location_service=LocationService(self.session);self.model=VehicleTableModel();self._build_ui();self._restore_view_state();self.refresh_table()
     def _build_ui(self):
         lay=QVBoxLayout(self);lay.addWidget(QLabel('<h2>Zugmaschinen</h2>'))
         f=QHBoxLayout();f.addWidget(QLabel('Suche:'));self.search=QLineEdit();self.search.setClearButtonEnabled(True);self.search.setPlaceholderText('Nummer, Kennzeichen, Art, Klasse, Standort oder Status');self.search.textChanged.connect(self.refresh_table);f.addWidget(self.search);self.show_archived=QCheckBox('Archivierte anzeigen');self.show_archived.toggled.connect(self.refresh_table);f.addWidget(self.show_archived);lay.addLayout(f)
@@ -20,6 +28,11 @@ class VehicleDialog(QDialog):
         row=QHBoxLayout()
         for text,fn in [('Neu',self.new_vehicle),('Bearbeiten',self.edit_vehicle),('Archivieren/Aktivieren',self.toggle_archive),('Excel importieren',self.import_excel),('Excel exportieren',self.export_excel)]:b=QPushButton(text);b.clicked.connect(fn);row.addWidget(b)
         row.addStretch();b=QPushButton('Schließen');b.clicked.connect(self.accept);row.addWidget(b);lay.addLayout(row)
+    def _restore_view_state(self):
+        state=self._settings.value('table_header')
+        if isinstance(state,QByteArray) and not state.isEmpty():self.table.horizontalHeader().restoreState(state)
+    def _save_view_state(self):
+        self._settings.setValue('table_header',self.table.horizontalHeader().saveState());self._settings.sync()
     def _filtered(self):
         text=self.search.text().strip().lower();items=self.service.get_all()
         if not self.show_archived.isChecked():items=[v for v in items if v.active]
@@ -74,4 +87,6 @@ class VehicleDialog(QDialog):
                 self.service.update(v) if v.id else self.service.add(v);count+=1
             self.refresh_table();QMessageBox.information(self,'Import',f'{count} Zugmaschinen verarbeitet.')
         except Exception as e:QMessageBox.critical(self,'Importfehler',str(e))
-    def closeEvent(self,e):self.session.close();super().closeEvent(e)
+    def accept(self):self._save_view_state();super().accept()
+    def reject(self):self._save_view_state();super().reject()
+    def closeEvent(self,e):self._save_view_state();self.session.close();super().closeEvent(e)

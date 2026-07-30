@@ -62,6 +62,7 @@ class DriverRepository:
             select(Driver)
             .where(
                 or_(
+                    Driver.match_code.ilike(pattern),
                     Driver.first_name.ilike(pattern),
                     Driver.last_name.ilike(pattern),
                     full_name.ilike(pattern),
