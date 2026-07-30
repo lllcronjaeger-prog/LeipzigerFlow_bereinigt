@@ -311,6 +311,7 @@ class MainWindow(QMainWindow):
             open_drivers=self.open_driver_dialog,
             open_vehicles=self.open_vehicle_dialog,
             open_trailers=self.open_trailer_dialog,
+            open_ai_assistant=self.open_ai_assistant,
             parent=self,
         )
         self.setCentralWidget(self.dashboard)

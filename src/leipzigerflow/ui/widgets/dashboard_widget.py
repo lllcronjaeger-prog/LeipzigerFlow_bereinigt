@@ -46,13 +46,24 @@ BUTTON_PRESSED = "#cbd4df"
 
 
 class DashboardCard(QFrame):
-    def __init__(self, title: str, accent: str, callback: Callable[[], None], parent=None):
+    """Große, gut lesbare KPI-Karte für den Disponenten-Leitstand."""
+
+    def __init__(
+        self,
+        title: str,
+        accent: str,
+        callback: Callable[[], None],
+        icon: str = "",
+        parent=None,
+    ):
         super().__init__(parent)
         self._callback = callback
         self._accent = accent
         self.setObjectName("dashboardCard")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(116)
+        self.setMinimumHeight(152)
+        self.setMinimumWidth(230)
+        self.setToolTip(f"{title} öffnen")
         self.setStyleSheet(
             f"""
             QFrame#dashboardCard {{ background:{PANEL_BACKGROUND}; border:1px solid {BORDER};
@@ -62,20 +73,38 @@ class DashboardCard(QFrame):
             """
         )
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(3)
+        layout.setContentsMargins(18, 16, 18, 15)
+        layout.setSpacing(6)
+
+        title_row = QHBoxLayout()
+        title_row.setSpacing(9)
+        if icon:
+            icon_label = QLabel(icon)
+            icon_label.setStyleSheet("font-size:22px; border:none; background:transparent;")
+            title_row.addWidget(icon_label)
         title_label = QLabel(title)
-        title_label.setStyleSheet(f"color:{TEXT_SECONDARY}; font-size:13px; font-weight:600;")
-        layout.addWidget(title_label)
+        title_label.setWordWrap(True)
+        title_label.setStyleSheet(
+            f"color:{TEXT_SECONDARY}; font-size:14px; font-weight:700; border:none; background:transparent;"
+        )
+        title_row.addWidget(title_label, 1)
+        layout.addLayout(title_row)
+
         self.value_label = QLabel("0")
         font = QFont()
-        font.setPointSize(27)
+        font.setPointSize(30)
         font.setBold(True)
         self.value_label.setFont(font)
-        self.value_label.setStyleSheet(f"color:{TEXT_PRIMARY};")
+        self.value_label.setStyleSheet(f"color:{TEXT_PRIMARY}; border:none; background:transparent;")
         layout.addWidget(self.value_label)
+        layout.addStretch(1)
+
         self.detail_label = QLabel("")
-        self.detail_label.setStyleSheet(f"color:{accent}; font-size:12px; font-weight:600;")
+        self.detail_label.setWordWrap(True)
+        self.detail_label.setMinimumHeight(20)
+        self.detail_label.setStyleSheet(
+            f"color:{accent}; font-size:12px; font-weight:700; border:none; background:transparent;"
+        )
         layout.addWidget(self.detail_label)
 
     def set_value(self, value: int, detail: str = "") -> None:
@@ -101,6 +130,7 @@ class DashboardWidget(QWidget):
         open_drivers: Callable[[], None],
         open_vehicles: Callable[[], None],
         open_trailers: Callable[[], None],
+        open_ai_assistant: Callable[[], None] | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -110,6 +140,7 @@ class DashboardWidget(QWidget):
         self._open_drivers = open_drivers
         self._open_vehicles = open_vehicles
         self._open_trailers = open_trailers
+        self._open_ai_assistant = open_ai_assistant
         self._service = OperationsDashboardService()
 
         self.setObjectName("dashboardRoot")
@@ -166,35 +197,97 @@ class DashboardWidget(QWidget):
         cockpit.layout().addLayout(cockpit_row)
         root.addWidget(cockpit)
 
-        resources_title = QLabel("Ressourcen")
-        resources_title.setObjectName("sectionTitle")
-        root.addWidget(resources_title)
-        resources = QGridLayout()
-        resources.setSpacing(14)
-        self.driver_card = DashboardCard("Verfügbare Fahrer", "#15803d", self._open_drivers)
-        self.vehicle_card = DashboardCard("Verfügbare Zugmaschinen", "#2563eb", self._open_vehicles)
-        self.trailer_card = DashboardCard("Verfügbare Trailer", "#7c3aed", self._open_trailers)
-        for column, card in enumerate((self.driver_card, self.vehicle_card, self.trailer_card)):
-            resources.addWidget(card, 0, column)
-            resources.setColumnStretch(column, 1)
-        root.addLayout(resources)
+        overview_title = QLabel("Betriebslage auf einen Blick")
+        overview_title.setObjectName("sectionTitle")
+        root.addWidget(overview_title)
 
-        planning_title = QLabel("Aufträge und Touren")
-        planning_title.setObjectName("sectionTitle")
-        root.addWidget(planning_title)
-        planning_cards = QGridLayout()
-        planning_cards.setSpacing(14)
-        self.open_orders_card = DashboardCard("Offene Aufträge", "#2563eb", self._open_orders)
-        self.critical_orders_card = DashboardCard("Kritische Aufträge", "#b91c1c", self._open_orders)
-        self.tours_today_card = DashboardCard("Touren heute", "#7c3aed", self._open_tours)
-        self.underway_card = DashboardCard("Touren unterwegs", "#d97706", self._open_tours)
-        self.conflict_card = DashboardCard("Aktive Konflikte", "#b91c1c", self._open_planning_board)
-        for column, card in enumerate(
-            (self.open_orders_card, self.critical_orders_card, self.tours_today_card, self.underway_card, self.conflict_card)
-        ):
-            planning_cards.addWidget(card, 0, column)
-            planning_cards.setColumnStretch(column, 1)
-        root.addLayout(planning_cards)
+        # Bewusst maximal vier Karten pro Zeile: Die Karten bleiben dadurch hoch,
+        # breit und auf typischen Disponenten-Monitoren sofort lesbar.
+        kpi_grid = QGridLayout()
+        kpi_grid.setHorizontalSpacing(16)
+        kpi_grid.setVerticalSpacing(16)
+        self.driver_card = DashboardCard(
+            "Verfügbare Fahrer", "#15803d", self._open_drivers, "👤"
+        )
+        self.vehicle_card = DashboardCard(
+            "Verfügbare Zugmaschinen", "#2563eb", self._open_vehicles, "🚚"
+        )
+        self.trailer_card = DashboardCard(
+            "Verfügbare Trailer", "#7c3aed", self._open_trailers, "🚛"
+        )
+        self.open_orders_card = DashboardCard(
+            "Offene Transportaufträge", "#d97706", self._open_orders, "📦"
+        )
+        self.tours_today_card = DashboardCard(
+            "Touren heute", "#2563eb", self._open_tours, "🗺️"
+        )
+        self.underway_card = DashboardCard(
+            "Touren unterwegs", "#0f766e", self._open_tours, "▶"
+        )
+        self.critical_orders_card = DashboardCard(
+            "Kritische Aufträge", "#b91c1c", self._open_orders, "⚠"
+        )
+        self.conflict_card = DashboardCard(
+            "Aktive Konflikte", "#b91c1c", self._open_planning_board, "!"
+        )
+        self._kpi_cards = (
+            self.driver_card,
+            self.vehicle_card,
+            self.trailer_card,
+            self.open_orders_card,
+            self.tours_today_card,
+            self.underway_card,
+            self.critical_orders_card,
+            self.conflict_card,
+        )
+        for index, card in enumerate(self._kpi_cards):
+            row, column = divmod(index, 4)
+            kpi_grid.addWidget(card, row, column)
+        for column in range(4):
+            kpi_grid.setColumnStretch(column, 1)
+            kpi_grid.setColumnMinimumWidth(column, 230)
+        root.addLayout(kpi_grid)
+
+        quick_panel = self._create_panel("Schnellzugriffe")
+        quick_row = QHBoxLayout()
+        quick_row.setSpacing(10)
+        quick_actions = (
+            ("Plantafel öffnen", self._open_planning_board),
+            ("Transportaufträge", self._open_orders),
+            ("Touren", self._open_tours),
+            ("Fahrer", self._open_drivers),
+            ("Zugmaschinen", self._open_vehicles),
+        )
+        for label, callback in quick_actions:
+            button = QPushButton(label)
+            button.setMinimumHeight(38)
+            button.clicked.connect(callback)
+            quick_row.addWidget(button)
+        if self._open_ai_assistant is not None:
+            ai_button = QPushButton("LeipzigerAI")
+            ai_button.setMinimumHeight(38)
+            ai_button.clicked.connect(self._open_ai_assistant)
+            quick_row.addWidget(ai_button)
+        quick_row.addStretch(1)
+        quick_panel.layout().addLayout(quick_row)
+        root.addWidget(quick_panel)
+
+        distribution = QHBoxLayout()
+        distribution.setSpacing(18)
+        resource_panel = self._create_panel("Ressourcenverfügbarkeit")
+        self.resource_summary = QLabel()
+        self.resource_summary.setWordWrap(True)
+        self.resource_summary.setObjectName("summaryText")
+        resource_panel.layout().addWidget(self.resource_summary)
+        distribution.addWidget(resource_panel, 1)
+
+        tour_panel = self._create_panel("Tourstatus heute")
+        self.tour_summary = QLabel()
+        self.tour_summary.setWordWrap(True)
+        self.tour_summary.setObjectName("summaryText")
+        tour_panel.layout().addWidget(self.tour_summary)
+        distribution.addWidget(tour_panel, 1)
+        root.addLayout(distribution)
 
         middle = QHBoxLayout()
         middle.setSpacing(18)
@@ -263,6 +356,7 @@ class DashboardWidget(QWidget):
         QLabel#dashboardDate {{ color:{TEXT_SECONDARY}; font-size:13px; }}
         QLabel#sectionTitle {{ color:{TEXT_PRIMARY}; font-size:18px; font-weight:700; }}
         QLabel#qualityLabel {{ color:{TEXT_PRIMARY}; font-size:16px; font-weight:700; }}
+        QLabel#summaryText {{ color:{TEXT_PRIMARY}; font-size:14px; line-height:1.4; padding:4px; }}
         QProgressBar {{ background:#e5e7eb; border:1px solid #cbd5e1; border-radius:6px; min-height:14px; }}
         QProgressBar::chunk {{ background:#15803d; border-radius:5px; }}
         QFrame#panel {{ background:{PANEL_BACKGROUND}; border:1px solid {BORDER}; border-radius:8px; }}
@@ -350,6 +444,22 @@ class DashboardWidget(QWidget):
         self.coverage_label.setText(
             f"Eigenfuhrpark heute: {snapshot.own_fleet_planned_today} / {snapshot.own_fleet_orders_today} · "
             f"Verkauf offen: {snapshot.sales_orders_open}"
+        )
+        self.resource_summary.setText(
+            f"Fahrer: <b>{snapshot.available_drivers} von {snapshot.active_drivers}</b> verfügbar · "
+            f"{snapshot.absent_drivers} abwesend<br>"
+            f"Zugmaschinen: <b>{snapshot.available_vehicles} von {snapshot.active_vehicles}</b> verfügbar · "
+            f"{snapshot.workshop_vehicles} Werkstatt/Defekt<br>"
+            f"Trailer: <b>{snapshot.available_trailers} von {snapshot.active_trailers}</b> verfügbar · "
+            f"{snapshot.workshop_trailers} Werkstatt/Defekt"
+        )
+        planned_tours = max(0, snapshot.tours_today - snapshot.underway_tours)
+        self.tour_summary.setText(
+            f"Heute insgesamt: <b>{snapshot.tours_today}</b><br>"
+            f"Geplant/sonstige aktive Status: <b>{planned_tours}</b> · "
+            f"Unterwegs: <b>{snapshot.underway_tours}</b><br>"
+            f"Unvollständig: <b>{snapshot.incomplete_tours}</b> · "
+            f"Aktive Konflikte: <b>{snapshot.active_conflicts}</b>"
         )
 
     def _fill_warnings(self, warnings: list[DashboardWarning]) -> None:
