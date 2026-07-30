@@ -234,7 +234,20 @@ class OperationsDashboardService:
         )
 
     @staticmethod
-    def _is_absent(driver: Driver, today: date) -> bool:
+    def _current_absence(driver: Driver, today: date):
+        for absence in getattr(driver, "absences", ()) or ():
+            if not getattr(absence, "active", True):
+                continue
+            starts_at = getattr(absence, "starts_at", None)
+            ends_at = getattr(absence, "ends_at", None)
+            if starts_at and ends_at and starts_at.date() <= today <= ends_at.date():
+                return absence
+        return None
+
+    @classmethod
+    def _is_absent(cls, driver: Driver, today: date) -> bool:
+        if cls._current_absence(driver, today) is not None:
+            return True
         if not driver.absence_from and not driver.absence_until:
             return False
         start = driver.absence_from or date.min
@@ -299,9 +312,14 @@ class OperationsDashboardService:
                 warnings, "Fahrer", subject, "Module 95", driver.module_95_valid_until, today
             )
             if self._is_absent(driver, today):
-                detail = driver.absence_reason or "Abwesend"
-                if driver.absence_until:
-                    detail += f" bis {driver.absence_until:%d.%m.%Y}"
+                absence = self._current_absence(driver, today)
+                if absence is not None:
+                    detail = getattr(absence, "reason", "Abwesend") or "Abwesend"
+                    detail += f" bis {absence.ends_at:%d.%m.%Y}"
+                else:
+                    detail = driver.absence_reason or "Abwesend"
+                    if driver.absence_until:
+                        detail += f" bis {driver.absence_until:%d.%m.%Y}"
                 warnings.append(DashboardWarning("info", "Fahrer", subject, detail))
 
     def _append_due_date_warning(

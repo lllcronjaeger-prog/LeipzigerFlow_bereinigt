@@ -16,6 +16,7 @@ from leipzigerflow.models.customer import Customer
 from leipzigerflow.services.customer_service import (
     CustomerService,
 )
+from leipzigerflow.ui.dialogs.customer_import_dialog import CustomerImportDialog
 from leipzigerflow.ui.dialogs.customer_edit_dialog import (
     CustomerEditDialog,
 )
@@ -100,6 +101,7 @@ class CustomerDialog(QDialog):
 
         action_layout = QHBoxLayout()
 
+        self.btn_import = QPushButton("Excel-Import")
         self.btn_new = QPushButton("Neu")
         self.btn_edit = QPushButton("Bearbeiten")
         self.btn_delete = QPushButton("Löschen")
@@ -126,6 +128,8 @@ class CustomerDialog(QDialog):
         self.edit_search.textChanged.connect(
             self._search
         )
+
+        self.btn_import.clicked.connect(self._import_customers)
 
         self.btn_new.clicked.connect(
             self._new_customer
@@ -194,6 +198,11 @@ class CustomerDialog(QDialog):
         row = rows[0].row()
 
         return self.table_model.customer_at(row)
+
+    def _import_customers(self):
+        dialog = CustomerImportDialog(self.service.repository._session, self)
+        if dialog.exec():
+            self._load_customers()
 
     # ---------------------------------------------------------
     # Neu

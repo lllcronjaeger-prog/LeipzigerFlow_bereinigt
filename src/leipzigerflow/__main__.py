@@ -20,7 +20,7 @@ from leipzigerflow.models.transport_order import (
 from leipzigerflow.models.vehicle import Vehicle
 from leipzigerflow.models.vehicle_staffing_profile import VehicleStaffingProfile
 from leipzigerflow.models.route_cache import GeocodeCacheEntry, RouteCacheEntry
-from leipzigerflow.models.resource_absence import VehicleAbsence, TrailerAbsence
+from leipzigerflow.models.resource_absence import VehicleAbsence, TrailerAbsence, DriverAbsence
 from leipzigerflow.models.trailer import Trailer
 
 from leipzigerflow.application_controller import ApplicationController

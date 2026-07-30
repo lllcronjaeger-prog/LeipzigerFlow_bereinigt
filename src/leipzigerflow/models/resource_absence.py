@@ -10,6 +10,10 @@ from leipzigerflow.database.base import Base
 
 
 class AbsenceReason(StrEnum):
+    VACATION = "Urlaub"
+    ILLNESS = "Krankheit"
+    TIME_OFF = "Freizeit / Ausgleich"
+    TRAINING = "Schulung"
     WORKSHOP = "Werkstatt"
     MAINTENANCE = "Wartung"
     INSPECTION = "TÜV / Prüfung"
@@ -52,6 +56,23 @@ class TrailerAbsence(Base):
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     trailer = relationship("Trailer", back_populates="absences")
+
+    def overlaps(self, starts_at: datetime, ends_at: datetime) -> bool:
+        return self.active and self.starts_at < ends_at and starts_at < self.ends_at
+
+
+class DriverAbsence(Base):
+    __tablename__ = "driver_absences"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    driver_id: Mapped[int] = mapped_column(ForeignKey("drivers.id", ondelete="CASCADE"), index=True)
+    starts_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    ends_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    reason: Mapped[str] = mapped_column(String(50), nullable=False, default=AbsenceReason.VACATION.value)
+    remarks: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    driver = relationship("Driver", back_populates="absences")
 
     def overlaps(self, starts_at: datetime, ends_at: datetime) -> bool:
         return self.active and self.starts_at < ends_at and starts_at < self.ends_at

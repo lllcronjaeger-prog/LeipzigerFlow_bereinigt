@@ -16,12 +16,14 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QSpinBox,
     QScrollArea,
+    QTabWidget,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
 from leipzigerflow.models.driver import Driver
+from leipzigerflow.ui.widgets.resource_absence_editor import ResourceAbsenceEditor
 
 
 class DriverEditDialog(QDialog):
@@ -53,12 +55,19 @@ class DriverEditDialog(QDialog):
         root.setContentsMargins(12, 12, 12, 10)
         root.setSpacing(10)
 
+        tabs = QTabWidget()
+        root.addWidget(tabs, 1)
+
+        general_page = QWidget()
+        general_page_layout = QVBoxLayout(general_page)
+        general_page_layout.setContentsMargins(0, 0, 0, 0)
         scroll = QScrollArea()
         scroll.setObjectName("driver_edit_scroll")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        root.addWidget(scroll, 1)
+        general_page_layout.addWidget(scroll)
+        tabs.addTab(general_page, "Allgemein und Qualifikationen")
 
         form_page = QWidget()
         form_page.setObjectName("driver_edit_form_page")
@@ -89,7 +98,6 @@ class DriverEditDialog(QDialog):
             "email",
             "license_number",
             "license_classes",
-            "absence_reason",
         ):
             edit = QLineEdit()
             edit.setMinimumWidth(170)
@@ -106,8 +114,6 @@ class DriverEditDialog(QDialog):
             ("driver_card_valid_until", "Fahrerkarte gültig bis"),
             ("module_95_valid_until", "Module 95 gültig bis"),
             ("adr_valid_until", "ADR gültig bis"),
-            ("absence_from", "Abwesend von"),
-            ("absence_until", "Abwesend bis"),
         ):
             chk = QCheckBox("Datum erfassen")
             edit = QDateEdit()
@@ -189,27 +195,17 @@ class DriverEditDialog(QDialog):
         work_form.addRow("Wochenziel", self.weekly_target); work_form.addRow("Grenze Doppelwoche", self.double_week_limit)
         grid.addWidget(work, 2, 0, 1, 2)
 
-        absence = QGroupBox("Aktuelle Abwesenheit")
-        absence_grid = QGridLayout(absence)
-        absence_grid.setContentsMargins(12, 12, 12, 12)
-        absence_grid.setHorizontalSpacing(18)
-        absence_grid.setVerticalSpacing(8)
-        absence_grid.setColumnStretch(0, 1)
-        absence_grid.setColumnStretch(1, 1)
-
-        absence_left_widget = QWidget()
-        absence_left = self._new_form_layout(absence_left_widget)
-        absence_left.addRow("Abwesend von", self._date_row("absence_from"))
-        absence_left.addRow("Abwesend bis", self._date_row("absence_until"))
-
-        absence_right_widget = QWidget()
-        absence_right = self._new_form_layout(absence_right_widget)
-        absence_right.addRow("Grund", self.edit_absence_reason)
-
-        absence_grid.addWidget(absence_left_widget, 0, 0)
-        absence_grid.addWidget(absence_right_widget, 0, 1)
-        grid.addWidget(absence, 3, 0, 1, 2)
         page_layout.addStretch(1)
+
+        absence_page = QWidget()
+        absence_layout = QVBoxLayout(absence_page)
+        absence_layout.setContentsMargins(12, 12, 12, 12)
+        self.absence_editor = ResourceAbsenceEditor(
+            getattr(driver, "absences", ()) if driver else (),
+            absence_page,
+        )
+        absence_layout.addWidget(self.absence_editor)
+        tabs.addTab(absence_page, "Geplante Abwesenheiten")
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
@@ -263,7 +259,6 @@ class DriverEditDialog(QDialog):
             "email",
             "license_number",
             "license_classes",
-            "absence_reason",
         ):
             getattr(self, "edit_" + name).setText(getattr(driver, name) or "")
         for key, (chk, edit, _) in self._dates.items():
@@ -345,8 +340,7 @@ class DriverEditDialog(QDialog):
                 "email",
                 "license_number",
                 "license_classes",
-                "absence_reason",
-            )
+                )
         }
         for key, (chk, edit, _) in self._dates.items():
             qdate = edit.date()
@@ -365,3 +359,6 @@ class DriverEditDialog(QDialog):
         data["double_week_limit_minutes"] = self.double_week_limit.value() * 60
         data["active"] = self.chk_active.isChecked()
         return data
+
+    def get_absence_drafts(self):
+        return self.absence_editor.drafts()

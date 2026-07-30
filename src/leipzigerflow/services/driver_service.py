@@ -4,6 +4,7 @@ from leipzigerflow.database.repositories.driver_repository import (
     DriverRepository,
 )
 from leipzigerflow.models.driver import Driver
+from leipzigerflow.models.resource_absence import DriverAbsence
 
 
 class DriverService:
@@ -60,6 +61,18 @@ class DriverService:
     # ---------------------------------------------------------
     # Validierung
     # ---------------------------------------------------------
+
+    def replace_absences(self, driver: Driver, drafts) -> None:
+        driver.absences.clear()
+        for draft in drafts:
+            driver.absences.append(DriverAbsence(
+                starts_at=draft.starts_at,
+                ends_at=draft.ends_at,
+                reason=draft.reason,
+                remarks=draft.remarks,
+                active=draft.active,
+            ))
+        self.repository.update(driver)
 
     def _validate(
         self,

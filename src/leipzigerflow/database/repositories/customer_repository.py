@@ -52,6 +52,7 @@ class CustomerRepository:
             .where(
                 or_(
                     Customer.name.ilike(pattern),
+                    Customer.match_code.ilike(pattern),
                     Customer.short_name.ilike(pattern),
                     Customer.city.ilike(pattern),
                 )

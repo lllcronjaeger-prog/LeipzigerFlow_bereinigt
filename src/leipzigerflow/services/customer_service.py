@@ -78,6 +78,7 @@ class CustomerService:
     ):
 
         customer.name = customer.name.strip()
+        customer.match_code = (getattr(customer, "match_code", "") or "").strip()
         customer.short_name = customer.short_name.strip()
 
         customer.street = customer.street.strip()

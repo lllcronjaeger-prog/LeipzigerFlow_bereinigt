@@ -11,10 +11,12 @@ from leipzigerflow.database.database import SessionLocal
 from leipzigerflow.ui.dialogs.ai_assistant_dialog import AiAssistantDialog
 from leipzigerflow.ui.dialogs.ai_settings_dialog import AiSettingsDialog
 from leipzigerflow.ui.dialogs.customer_dialog import CustomerDialog
+from leipzigerflow.ui.dialogs.customer_import_dialog import CustomerImportDialog
 from leipzigerflow.ui.dialogs.database_settings_dialog import DatabaseSettingsDialog
 from leipzigerflow.ui.dialogs.driver_dialog import DriverDialog
 from leipzigerflow.ui.dialogs.driver_import_dialog import DriverImportDialog
 from leipzigerflow.ui.dialogs.vehicle_import_dialog import VehicleImportDialog
+from leipzigerflow.ui.dialogs.disposition_import_dialog import DispositionImportDialog
 from leipzigerflow.ui.dialogs.fleet_utilization_dialog import FleetUtilizationDialog
 from leipzigerflow.ui.dialogs.location_dialog import LocationDialog
 from leipzigerflow.ui.dialogs.planning_board_dialog import PlanningBoardDialog
@@ -177,11 +179,17 @@ class MainWindow(QMainWindow):
         self.action_locations = QAction("Standorte", self)
         self.action_locations.triggered.connect(self.open_location_dialog)
 
+        self.action_customer_import = QAction("Kunden aus Excel importieren", self)
+        self.action_customer_import.triggered.connect(self.open_customer_import)
+
         self.action_driver_import = QAction("Fahrer aus Excel importieren", self)
         self.action_driver_import.triggered.connect(self.open_driver_import)
 
         self.action_vehicle_import = QAction("Fahrzeuge aus Excel importieren", self)
         self.action_vehicle_import.triggered.connect(self.open_vehicle_import)
+
+        self.action_disposition_import = QAction("Disposition synchronisieren", self)
+        self.action_disposition_import.triggered.connect(self.open_disposition_import)
 
         self.action_drivers = QAction("Fahrer", self)
         self.action_drivers.triggered.connect(self.open_driver_dialog)
@@ -242,8 +250,11 @@ class MainWindow(QMainWindow):
         master_menu.addAction(self.action_trailers)
 
         data_menu = menu.addMenu("Import / Export")
+        data_menu.addAction(self.action_customer_import)
         data_menu.addAction(self.action_driver_import)
         data_menu.addAction(self.action_vehicle_import)
+        data_menu.addSeparator()
+        data_menu.addAction(self.action_disposition_import)
 
         planning_menu = menu.addMenu("Planung")
         planning_menu.addAction(self.action_transport_orders)
@@ -331,8 +342,10 @@ class MainWindow(QMainWindow):
                 self.action_vehicles,
                 self.action_trailers,
                 self.action_fleet_utilization,
+                self.action_customer_import,
                 self.action_driver_import,
                 self.action_vehicle_import,
+                self.action_disposition_import,
             ),
             "orders.view": (self.action_transport_orders, self.action_tours),
             "planning.view": (self.action_planning_board,),
@@ -418,6 +431,15 @@ class MainWindow(QMainWindow):
     def open_driver_dialog(self):
         self.window_manager.open("drivers")
 
+    def open_customer_import(self):
+        session = SessionLocal()
+        try:
+            if CustomerImportDialog(session, parent=self).exec():
+                self.window_manager.refresh_all()
+                self._refresh_dashboard()
+        finally:
+            session.close()
+
     def open_driver_import(self):
         session = SessionLocal()
         try:
@@ -431,6 +453,15 @@ class MainWindow(QMainWindow):
         session = SessionLocal()
         try:
             if VehicleImportDialog(session, parent=self).exec():
+                self.window_manager.refresh_all()
+                self._refresh_dashboard()
+        finally:
+            session.close()
+
+    def open_disposition_import(self):
+        session = SessionLocal()
+        try:
+            if DispositionImportDialog(session, parent=self).exec():
                 self.window_manager.refresh_all()
                 self._refresh_dashboard()
         finally:

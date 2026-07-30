@@ -29,6 +29,15 @@ class RotationManager:
     def status(self, driver, day: date) -> RotationStatus:
         if not bool(getattr(driver, "active", True)):
             return RotationStatus(day, False, "Inaktiv", 0, 0, None, "Fahrer ist inaktiv", None)
+        for absence in getattr(driver, "absences", ()) or ():
+            if not getattr(absence, "active", True):
+                continue
+            starts_at = getattr(absence, "starts_at", None)
+            ends_at = getattr(absence, "ends_at", None)
+            if starts_at and ends_at and starts_at.date() <= day <= ends_at.date():
+                reason = str(getattr(absence, "reason", "Abwesend") or "Abwesend")
+                return RotationStatus(day, False, reason, 0, 0, None, reason, ends_at.date() + timedelta(days=1))
+        # Rückwärtskompatibilität für ältere Datenbanken.
         absence_from = getattr(driver, "absence_from", None)
         absence_until = getattr(driver, "absence_until", None)
         if absence_from and absence_until and absence_from <= day <= absence_until:

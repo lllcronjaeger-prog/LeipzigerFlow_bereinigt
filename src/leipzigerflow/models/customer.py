@@ -1,7 +1,7 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Integer, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from leipzigerflow.database.base import Base
 
@@ -19,6 +19,20 @@ class Customer(Base):
         String(100, collation="NOCASE"),
         nullable=False,
         unique=True,
+    )
+
+
+    match_code: Mapped[str] = mapped_column(
+        String(100, collation="NOCASE"),
+        default="",
+        nullable=False,
+        index=True,
+    )
+
+    freight_payer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customers.id"),
+        nullable=True,
+        index=True,
     )
 
     short_name: Mapped[str] = mapped_column(
@@ -118,6 +132,8 @@ class Customer(Base):
         nullable=False,
     )
 
+    freight_payer = relationship("Customer", remote_side=[id], foreign_keys=[freight_payer_id])
+
     @property
     def display_name(self) -> str:
         """Kurze Anzeige für Listen und Comboboxen."""
@@ -150,6 +166,7 @@ class Customer(Base):
 
         values = [
             self.name,
+            self.match_code,
             self.short_name,
             self.street,
             self.house_number,

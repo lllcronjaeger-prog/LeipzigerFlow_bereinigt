@@ -18,6 +18,8 @@ def migrate_database(engine: Engine) -> None:
         _add(statements,"customers",columns,"disposition_priority","INTEGER NOT NULL DEFAULT 5")
         _add(statements,"customers",columns,"own_fleet_preferred","BOOLEAN NOT NULL DEFAULT 0")
         _add(statements,"customers",columns,"subcontracting_allowed","BOOLEAN NOT NULL DEFAULT 1")
+        _add(statements,"customers",columns,"match_code","VARCHAR(100) NOT NULL DEFAULT ''")
+        _add(statements,"customers",columns,"freight_payer_id","INTEGER")
 
     if "transport_orders" in tables:
         columns = {c["name"] for c in inspector.get_columns("transport_orders")}

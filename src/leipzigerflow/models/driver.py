@@ -40,6 +40,12 @@ class Driver(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
     home_base_location = relationship("Location", foreign_keys=[home_base_location_id])
+    absences = relationship(
+        "DriverAbsence",
+        back_populates="driver",
+        cascade="all, delete-orphan",
+        order_by="DriverAbsence.starts_at",
+    )
     @property
     def full_name(self): return f"{self.first_name} {self.last_name}".strip()
     @property

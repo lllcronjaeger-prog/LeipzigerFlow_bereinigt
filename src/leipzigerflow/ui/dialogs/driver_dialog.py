@@ -265,6 +265,7 @@ class DriverDialog(QDialog):
 
         try:
             self.service.add(driver)
+            self.service.replace_absences(driver, dialog.get_absence_drafts())
 
         except ValueError as error:
             QMessageBox.warning(
@@ -339,6 +340,7 @@ class DriverDialog(QDialog):
 
         try:
             self.service.update(driver)
+            self.service.replace_absences(driver, dialog.get_absence_drafts())
 
         except ValueError as error:
             self._restore_driver_data(

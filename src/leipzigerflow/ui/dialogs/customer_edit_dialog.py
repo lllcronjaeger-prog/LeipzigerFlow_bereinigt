@@ -33,6 +33,7 @@ class CustomerEditDialog(QDialog):
 
         self.edit_name = QLineEdit()
 
+        self.edit_match_code = QLineEdit()
         self.edit_short_name = QLineEdit()
         self.edit_short_name.setPlaceholderText(
             "z. B. BMW, AMZ, DAC"
@@ -66,6 +67,7 @@ class CustomerEditDialog(QDialog):
         self.chk_active.setChecked(True)
 
         form.addRow("Name", self.edit_name)
+        form.addRow("MatchCode", self.edit_match_code)
         form.addRow("Kurzname", self.edit_short_name)
         form.addRow("Straße", self.edit_street)
         form.addRow("Hausnummer", self.edit_house_number)
@@ -95,6 +97,7 @@ class CustomerEditDialog(QDialog):
 
         if customer is not None:
             self.edit_name.setText(customer.name)
+            self.edit_match_code.setText(getattr(customer, "match_code", ""))
             self.edit_short_name.setText(
                 customer.short_name
             )
@@ -130,6 +133,7 @@ class CustomerEditDialog(QDialog):
     def get_customer_data(self) -> dict:
         return {
             "name": self.edit_name.text().strip(),
+            "match_code": self.edit_match_code.text().strip(),
             "short_name": (
                 self.edit_short_name.text().strip()
             ),
