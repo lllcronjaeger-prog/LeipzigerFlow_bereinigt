@@ -8,10 +8,12 @@ from sqlalchemy.orm import Session
 from leipzigerflow.database.base import Base
 from leipzigerflow.imports.disposition_excel import build_preview, parse_address, parse_time_window
 from leipzigerflow.models.customer import Customer
+from leipzigerflow.models.driver import Driver
 from leipzigerflow.models.location import Location
 from leipzigerflow.models.tour import Tour
 from leipzigerflow.models.tour_position import TourPosition
 from leipzigerflow.models.transport_order import TransportOrder
+from leipzigerflow.models.vehicle import Vehicle
 from leipzigerflow.services.disposition_import_service import DispositionImportService
 
 
@@ -151,3 +153,131 @@ def test_reimport_updates_by_customer_order_number(tmp_path):
         assert second.orders_updated == 1
         assert len(orders) == 1
         assert orders[0].transport_number == "T-NEW"
+
+
+def test_storno_rule_is_rechecked_during_import_without_preview(tmp_path):
+    path = tmp_path / "storno_direct.xlsx"
+    wb = Workbook(); ws = wb.active
+    ws.append(["Dossier", "Ladetermin", "Liefertermin", "Transportnummer", "Beladeadresse", "Entladeadresse", "Frachtzahler", "Unternehmer"])
+    ws.append(["D1", "30.07.2026", "30.07.2026", "T-STORNO-DIRECT", "A", "B", "K", "  STORNO   LAUT KUNDE  "])
+    wb.save(path)
+    engine = create_engine("sqlite+pysqlite:///:memory:"); Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        result = DispositionImportService(session).import_rows(build_preview(path).rows)
+        assert result.ignored_by_rule == 1
+        assert session.scalars(select(TransportOrder)).all() == []
+
+
+def test_storno_in_vehicle_column_removes_previously_imported_order(tmp_path):
+    path = tmp_path / "storno_existing.xlsx"
+    wb = Workbook(); ws = wb.active
+    ws.append(["Dossier", "Ladetermin", "Liefertermin", "Transportnummer", "Kundenauftragsnummer", "Beladeadresse", "Entladeadresse", "Fahrzeug", "Frachtzahler", "Unternehmer"])
+    ws.append(["D1", "31.07.2026", "31.07.2026", "T-1", "KA-STORNO", "A", "B", "", "K", "LLL"])
+    wb.save(path)
+    engine = create_engine("sqlite+pysqlite:///:memory:"); Base.metadata.create_all(engine)
+    with Session(engine, autoflush=False) as session:
+        service = DispositionImportService(session)
+        first = service.import_rows(build_preview(path).rows)
+        assert first.orders_created == 1
+        ws["H2"] = "STORNO LAUT KUNDE"
+        wb.save(path)
+        second = service.import_rows(build_preview(path).rows)
+        assert second.ignored_by_rule == 1
+        assert session.scalars(select(TransportOrder)).all() == []
+        assert session.scalars(select(TourPosition)).all() == []
+
+
+def test_import_with_vehicle_assignment_does_not_call_routing_schedule(tmp_path, monkeypatch):
+    from leipzigerflow.models.driver import Driver
+    from leipzigerflow.models.vehicle import Vehicle
+    from leipzigerflow.models.vehicle_resource_assignment import VehicleResourceAssignment
+    from leipzigerflow.planner.time_planning import TimePlanningEngine
+
+    path = tmp_path / "stammfahrer.xlsx"
+    wb = Workbook(); ws = wb.active
+    ws.append(["Dossier", "Ladetermin", "Liefertermin", "Transportnummer", "Kundenauftragsnummer", "Beladeadresse", "Entladeadresse", "Fahrzeug", "Frachtzahler", "Unternehmer"])
+    ws.append(["D1", "31.07.2026", "31.07.2026", "T-2", "KA-2", "A", "B", "KA-LL 8043", "K", "LLL"])
+    wb.save(path)
+    engine = create_engine("sqlite+pysqlite:///:memory:"); Base.metadata.create_all(engine)
+    with Session(engine, autoflush=False) as session:
+        driver = Driver(first_name="Max", last_name="Stamm", active=True)
+        vehicle = Vehicle(license_plate="KA-LL 8043", active=True)
+        session.add_all([driver, vehicle]); session.flush()
+        session.add(VehicleResourceAssignment(
+            vehicle_id=vehicle.id, driver_id=driver.id, valid_from=date(2026, 7, 1), active=True
+        ))
+        session.commit()
+
+        def fail_if_called(*_args, **_kwargs):
+            raise AssertionError("Routing-/Zeitplanung darf im Import nicht aufgerufen werden")
+
+        monkeypatch.setattr(TimePlanningEngine, "build_schedule", fail_if_called)
+        result = DispositionImportService(session).import_rows(build_preview(path).rows)
+        tour = session.scalar(select(Tour))
+        assert result.orders_created == 1
+        assert tour is not None
+        assert tour.driver_id == driver.id
+        assert len(tour.driver_assignments) == 1
+
+
+def test_import_matches_driver_with_reversed_name_and_extra_spacing(tmp_path):
+    path = tmp_path / "driver-match.xlsx"
+    wb = Workbook(); ws = wb.active
+    ws.append(["Dossier", "Ladetermin", "Liefertermin", "Transportnummer", "Kundenauftragsnummer", "Beladeadresse", "Entladeadresse", "Fahrzeug", "Frachtzahler", "Fahrer", "Unternehmer"])
+    ws.append(["D-1", "31.07.2026", "31.07.2026", "T-1", "KA-1", "A", "B", "KA-LL 9999", "K", "  Mustermann,   Max  ", "LLL"])
+    wb.save(path)
+    engine = create_engine("sqlite+pysqlite:///:memory:"); Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        driver = Driver(first_name="Max", last_name="Mustermann", active=True)
+        vehicle = Vehicle(license_plate="KA-LL 9999", active=True)
+        session.add_all([driver, vehicle]); session.commit()
+        service = DispositionImportService(session)
+        service.import_rows(build_preview(path).rows)
+        tour = session.scalar(select(Tour))
+        assert tour is not None
+        assert tour.driver_id == driver.id
+        assert len(tour.driver_assignments) == 1
+        assert tour.driver_assignments[0].driver_id == driver.id
+
+
+def test_external_subcontractor_order_is_not_open_or_auto_dispatchable(tmp_path):
+    path = tmp_path / "external.xlsx"
+    wb = Workbook(); ws = wb.active
+    ws.append(["Dossier", "Ladetermin", "Liefertermin", "Transportnummer", "Kundenauftragsnummer", "Beladeadresse", "Entladeadresse", "Frachtzahler", "Unternehmer"])
+    ws.append(["D-EXT", "31.07.2026", "31.07.2026", "T-EXT", "KA-EXT", "A", "B", "K", "Muster Transporte GmbH"])
+    wb.save(path)
+    engine = create_engine("sqlite+pysqlite:///:memory:"); Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        result = DispositionImportService(session).import_rows(build_preview(path).rows)
+        order = session.scalar(select(TransportOrder).where(TransportOrder.customer_order_number == "KA-EXT"))
+        assert result.subcontractor_orders == 1
+        assert order is not None
+        assert order.assignment_type == "Subunternehmer"
+        assert order.auto_dispatch_eligible is False
+        assert order.status == "Extern vergeben"
+        assert order.contractor is not None
+        assert order.contractor.name == "Muster Transporte GmbH"
+        assert session.scalars(select(TourPosition)).all() == []
+
+
+def test_explicit_open_rule_can_reopen_named_subcontractor(tmp_path):
+    path = tmp_path / "external_open.xlsx"
+    wb = Workbook(); ws = wb.active
+    ws.append(["Dossier", "Ladetermin", "Liefertermin", "Transportnummer", "Kundenauftragsnummer", "Beladeadresse", "Entladeadresse", "Frachtzahler", "Unternehmer"])
+    ws.append(["D-OPEN", "31.07.2026", "31.07.2026", "T-OPEN-EXT", "KA-OPEN-EXT", "A", "B", "K", "Muster Transporte GmbH"])
+    wb.save(path)
+    engine = create_engine("sqlite+pysqlite:///:memory:"); Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(DispositionImportRule(
+            name="Muster wieder offen", field_name="Unternehmer", operator="ist gleich",
+            comparison_value="Muster Transporte GmbH", action="Disposition offen",
+            priority=1, active=True,
+        ))
+        session.commit()
+        DispositionImportService(session).import_rows(build_preview(path).rows)
+        order = session.scalar(select(TransportOrder).where(TransportOrder.customer_order_number == "KA-OPEN-EXT"))
+        assert order is not None
+        assert order.assignment_type == "Disposition offen"
+        assert order.auto_dispatch_eligible is True
+        assert order.contractor_id is None
+        assert order.status == "Neu"

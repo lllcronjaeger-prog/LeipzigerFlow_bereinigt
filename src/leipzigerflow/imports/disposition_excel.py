@@ -86,8 +86,17 @@ class DispositionImportRow:
 
     @property
     def is_cancelled(self) -> bool:
-        text = f"{self.remarks} {self.vehicle}".casefold()
-        return "storno" in text
+        text = " ".join((
+            self.remarks,
+            self.vehicle,
+            self.driver,
+            self.subcontractor,
+            self.freight_payer,
+            self.loading_reference,
+            self.unloading_reference,
+        ))
+        normalized = re.sub(r"\s+", " ", text).strip().casefold()
+        return "storno laut kunde" in normalized or normalized.startswith("storno")
 
     @property
     def has_planning(self) -> bool:

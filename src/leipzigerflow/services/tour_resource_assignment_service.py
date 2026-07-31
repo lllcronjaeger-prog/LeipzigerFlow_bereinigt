@@ -46,8 +46,19 @@ class TourResourceAssignmentService:
             .order_by(VehicleResourceAssignment.valid_from.desc(), VehicleResourceAssignment.id.desc())
         )
 
-    def apply_vehicle_assignment_to_tour(self, tour: Tour, *, overwrite: bool = False) -> bool:
-        """Übernimmt die am Tourtag gültige Stammbesetzung in eine konkrete Tour."""
+    def apply_vehicle_assignment_to_tour(
+        self,
+        tour: Tour,
+        *,
+        overwrite: bool = False,
+        schedule_bounds: tuple[datetime, datetime] | None = None,
+    ) -> bool:
+        """Übernimmt die am Tourtag gültige Stammbesetzung in eine konkrete Tour.
+
+        ``schedule_bounds`` wird insbesondere vom Dispositionsimport übergeben,
+        damit dort keine Routing-/Geocodingberechnung innerhalb der Schreib-
+        transaktion ausgelöst wird.
+        """
         if not tour.vehicle_id:
             return False
         assignment = self.assignment_for_vehicle(tour.vehicle_id, tour.tour_date)
@@ -57,13 +68,17 @@ class TourResourceAssignmentService:
         if assignment.driver_id and (overwrite or not tour.driver_id):
             driver = self.session.get(Driver, assignment.driver_id)
             if driver and self.availability.status(driver, tour.tour_date).available:
-                schedule = self.time_planning.build_schedule(tour)
+                if schedule_bounds is None:
+                    schedule = self.time_planning.build_schedule(tour)
+                    starts_at, ends_at = schedule.start_at, schedule.end_at
+                else:
+                    starts_at, ends_at = schedule_bounds
                 tour.driver_id = driver.id
                 tour.driver_assignments.clear()
                 tour.driver_assignments.append(TourDriverAssignment(
                     driver_id=driver.id,
-                    starts_at=schedule.start_at,
-                    ends_at=schedule.end_at,
+                    starts_at=starts_at,
+                    ends_at=ends_at,
                     sequence=1,
                 ))
                 changed = True

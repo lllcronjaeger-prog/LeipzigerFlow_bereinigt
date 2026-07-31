@@ -2,14 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from sqlalchemy import or_, select
 from PySide6.QtCore import QDateTime, Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDateEdit, QDateTimeEdit, QDialog, QDialogButtonBox, QFormLayout,
+    QComboBox, QDateEdit, QDateTimeEdit, QDialog, QDialogButtonBox, QFormLayout,
     QHBoxLayout, QLabel, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
     QVBoxLayout,
 )
 
 from leipzigerflow.planner.time_planning import TimePlanningEngine
+from leipzigerflow.models.driver import Driver
+from leipzigerflow.models.dispatch_group import dispatch_group_drivers
 from leipzigerflow.services.tour_resource_assignment_service import ResourceAssignmentError, TourResourceAssignmentService
 from leipzigerflow.services.driver_availability_service import DriverAvailabilityService
 
@@ -22,7 +25,7 @@ class TourCrewDialog(QDialog):
         self.session = session
         self.tour = tour
         self.service = TourResourceAssignmentService(session)
-        self.drivers = self.service.active_drivers()
+        self.drivers = self._drivers_for_tour()
         self.schedule = TimePlanningEngine().build_schedule(tour)
         self.availability = DriverAvailabilityService()
         self.setWindowTitle(f"Fahrerzuordnung · {tour.tour_number}")
@@ -34,8 +37,8 @@ class TourCrewDialog(QDialog):
             f"Fahrerwechsel sind nur an der Fahrzeugbasis <b>{base}</b> möglich. "
             "Zu jedem Zeitpunkt darf genau ein Fahrer aktiv sein."
         ))
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Fahrer", "Beginn", "Ende", "Wechselgrund"])
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Fahrer", "Beginn / Wechselzeit", "Wechselgrund"])
         self.table.horizontalHeader().setStretchLastSection(True)
         root.addWidget(self.table)
 
@@ -77,16 +80,58 @@ class TourCrewDialog(QDialog):
         existing = list(getattr(tour, "driver_assignments", []) or [])
         if existing:
             for item in existing:
-                self._add_row(item.driver_id, item.starts_at, item.ends_at, item.change_reason)
+                self._add_row(item.driver_id, item.starts_at, item.change_reason)
         else:
             end_at = self.schedule.end_at
             if end_at <= self.schedule.start_at:
                 end_at = self.schedule.start_at + timedelta(hours=10)
-            self._add_row(getattr(tour, "driver_id", None), self.schedule.start_at, end_at, "")
+            self._add_row(getattr(tour, "driver_id", None), self.schedule.start_at, "")
         self._scope_changed()
         self._update_phase_info()
 
-    def _add_row(self, driver_id=None, starts_at=None, ends_at=None, reason=""):
+    def _drivers_for_tour(self) -> list[Driver]:
+        """Zeigt standardmäßig nur Fahrer der Tour-/Fahrzeuggruppe an.
+
+        Legacy-Zuordnungen über ``dispatch_group_id`` und die n:m-Tabelle werden
+        gemeinsam berücksichtigt. Ist keine Gruppe vorhanden, bleibt die bisherige
+        vollständige Fahrerliste erhalten. Bereits zugeordnete Fahrer werden immer
+        angeboten, damit bestehende Touren bearbeitbar bleiben.
+        """
+        group_id = int(getattr(self.tour, "dispatch_group_id", 0) or 0)
+        vehicle = getattr(self.tour, "vehicle", None)
+        if not group_id and vehicle is not None:
+            group_id = int(getattr(vehicle, "dispatch_group_id", 0) or 0)
+            if not group_id:
+                groups = list(getattr(vehicle, "dispatch_groups", ()) or ())
+                if groups:
+                    group_id = int(groups[0].id)
+        if not group_id:
+            return self.service.active_drivers()
+
+        linked_ids = select(dispatch_group_drivers.c.driver_id).where(
+            dispatch_group_drivers.c.dispatch_group_id == group_id
+        )
+        current_ids = {
+            int(driver_id) for driver_id in (
+                getattr(self.tour, "driver_id", None),
+                *(getattr(item, "driver_id", None) for item in (getattr(self.tour, "driver_assignments", ()) or ())),
+            ) if driver_id
+        }
+        statement = (
+            select(Driver)
+            .where(
+                Driver.active.is_(True),
+                or_(
+                    Driver.dispatch_group_id == group_id,
+                    Driver.id.in_(linked_ids),
+                    Driver.id.in_(current_ids) if current_ids else False,
+                ),
+            )
+            .order_by(Driver.last_name, Driver.first_name)
+        )
+        return list(self.session.scalars(statement).unique())
+
+    def _add_row(self, driver_id=None, starts_at=None, reason=""):
         row = self.table.rowCount()
         self.table.insertRow(row)
         combo = QComboBox()
@@ -100,18 +145,42 @@ class TourCrewDialog(QDialog):
         self.table.setCellWidget(row, 0, combo)
 
         if starts_at is None:
-            starts_at = self.schedule.start_at if row == 0 else self._date_time(row - 1, 2)
-        if ends_at is None:
-            ends_at = self.schedule.end_at
-        for col, value in ((1, starts_at), (2, ends_at)):
-            edit = QDateTimeEdit(QDateTime(value))
-            edit.setCalendarPopup(True)
-            edit.setDisplayFormat("dd.MM.yyyy HH:mm")
-            self.table.setCellWidget(row, col, edit)
-        self.table.setItem(row, 3, QTableWidgetItem(reason))
+            if row == 0:
+                starts_at = self.schedule.start_at
+            else:
+                previous = self._date_time(row - 1, 1)
+                starts_at = min(previous + timedelta(hours=1), self._schedule_end())
+        edit = QDateTimeEdit(QDateTime(starts_at))
+        edit.setCalendarPopup(True)
+        edit.setDisplayFormat("dd.MM.yyyy HH:mm")
+        self.table.setCellWidget(row, 1, edit)
+        self.table.setItem(row, 2, QTableWidgetItem(reason))
 
     def _date_time(self, row, col):
         return self.table.cellWidget(row, col).dateTime().toPython()
+
+    def _schedule_end(self) -> datetime:
+        end_at = self.schedule.end_at
+        if end_at <= self.schedule.start_at:
+            return self.schedule.start_at + timedelta(hours=10)
+        return end_at
+
+    def _segments_from_rows(self) -> list[dict]:
+        rows = []
+        for row in range(self.table.rowCount()):
+            combo = self.table.cellWidget(row, 0)
+            if combo.currentData() is None:
+                raise ResourceAssignmentError("Bitte in jedem Abschnitt einen Fahrer auswählen.")
+            rows.append({
+                "driver_id": int(combo.currentData()),
+                "starts_at": self._date_time(row, 1),
+                "reason": self.table.item(row, 2).text().strip() if self.table.item(row, 2) else "",
+            })
+        rows.sort(key=lambda item: item["starts_at"])
+        tour_end = self._schedule_end()
+        for index, item in enumerate(rows):
+            item["ends_at"] = rows[index + 1]["starts_at"] if index + 1 < len(rows) else tour_end
+        return rows
 
 
     def _selected_last_driver(self):
@@ -149,19 +218,8 @@ class TourCrewDialog(QDialog):
             self.table.removeRow(row)
 
     def _save(self):
-        segments = []
-        for row in range(self.table.rowCount()):
-            combo = self.table.cellWidget(row, 0)
-            if combo.currentData() is None:
-                QMessageBox.warning(self, "Fahrerzuordnung", "Bitte in jedem Abschnitt einen Fahrer auswählen.")
-                return
-            segments.append({
-                "driver_id": int(combo.currentData()),
-                "starts_at": self._date_time(row, 1),
-                "ends_at": self._date_time(row, 2),
-                "reason": self.table.item(row, 3).text().strip() if self.table.item(row, 3) else "",
-            })
         try:
+            segments = self._segments_from_rows()
             scope = self.scope.currentData()
             valid_until = None
             if scope == "next_day":

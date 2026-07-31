@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -141,13 +141,27 @@ class DispositionImportService:
 
     def import_rows(self, rows: list[DispositionImportRow]) -> DispositionImportResult:
         result = DispositionImportResult()
+        # Regeln werden beim eigentlichen Import erneut ausgewertet. Dadurch ist
+        # der Schutz auch dann aktiv, wenn ein Aufruf die Vorschau/mark_existing
+        # überspringt oder die Regel nach dem Erzeugen der Vorschau geändert wurde.
+        self._ensure_default_rules()
+        rules = list(self.session.scalars(
+            select(DispositionImportRule)
+            .where(DispositionImportRule.active.is_(True))
+            .order_by(DispositionImportRule.priority, DispositionImportRule.id)
+        ))
         try:
             for row in rows:
+                self._apply_import_rule(row, rules)
+                # Storno muss vor jeder Stammdaten-, Routing- oder Touranlage greifen.
+                # Zusätzlich zur konfigurierbaren Regel wird der eindeutige Dispoplan-
+                # Status robust über alle importierten Textfelder erkannt.
+                if row.rule_action == "Auftrag ignorieren" or row.is_cancelled:
+                    self._remove_existing_cancelled_order(row)
+                    result.ignored_by_rule += 1
+                    continue
                 if not row.is_valid:
                     result.skipped += 1
-                    continue
-                if row.rule_action == "Auftrag ignorieren":
-                    result.ignored_by_rule += 1
                     continue
                 customer = self._get_or_create_customer(row.freight_payer, result)
                 loading = self._get_or_create_location(row.loading_address, customer, result)
@@ -186,6 +200,47 @@ class DispositionImportService:
             self.session.rollback()
             raise
         return result
+
+
+    def _remove_existing_cancelled_order(self, row: DispositionImportRow) -> None:
+        """Entfernt einen bereits früher importierten, nun stornierten Auftrag.
+
+        Dadurch verschwinden Stornos auch dann aus der Auftragsübersicht, wenn sie
+        in einem älteren Import bereits angelegt wurden. Die Kundenauftragsnummer
+        bleibt der führende Schlüssel; die Transportnummer dient nur als Fallback.
+        """
+        order = self._find_existing_order(row)
+        if order is None:
+            return
+        positions = list(self.session.scalars(
+            select(TourPosition).where(TourPosition.transport_order_id == order.id)
+        ))
+        for position in positions:
+            self.session.delete(position)
+        self.session.delete(order)
+        self.session.flush()
+
+    @staticmethod
+    def _import_schedule_bounds(row: DispositionImportRow) -> tuple[datetime, datetime]:
+        """Erzeugt belastbare Fahrerzeiten ohne Routing/Geocoding.
+
+        Der Import darf keine Online-Routenberechnung auslösen, weil diese einen
+        zweiten SQLite-Schreiber öffnet und den eigentlichen Import blockieren kann.
+        """
+        start_day = row.loading_date or date.today()
+        end_day = row.unloading_date or start_day
+        start_at = datetime.combine(start_day, row.loading_time_from or datetime.min.time())
+        if row.unloading_time_until is not None:
+            end_at = datetime.combine(end_day, row.unloading_time_until)
+        elif row.unloading_time_from is not None:
+            end_at = datetime.combine(end_day, row.unloading_time_from)
+        elif row.loading_time_until is not None:
+            end_at = datetime.combine(start_day, row.loading_time_until)
+        else:
+            end_at = start_at + timedelta(hours=10)
+        if end_at <= start_at:
+            end_at = start_at + timedelta(hours=10)
+        return start_at, end_at
 
     def _find_existing_order(self, row: DispositionImportRow) -> TransportOrder | None:
         """Kundenauftragsnummer ist der führende fachliche Synchronisationsschlüssel.
@@ -358,11 +413,21 @@ class DispositionImportService:
         order.contractor_raw = row.subcontractor
         order.import_rule_action = row.rule_action
         order.planning_owner_hint = row.responsibility_hint or (row.subcontractor if row.rule_action == "Disposition offen" else "")
-        order.auto_dispatch_eligible = row.rule_action not in {"Auftrag ignorieren", "Fest an Subunternehmer vergeben"}
+        is_external_contractor = bool(contractor is not None and not contractor.is_own_fleet)
+        # Ein im Dispoplan bereits an einen Subunternehmer vergebener Auftrag ist
+        # fachlich disponiert. Er darf weder im offenen Pool noch in der
+        # Auto-Disposition auftauchen. Nur eine ausdrückliche Importregel darf
+        # ihn wieder für die interne Planung öffnen.
+        order.auto_dispatch_eligible = (
+            row.rule_action not in {"Auftrag ignorieren", "Fest an Subunternehmer vergeben"}
+            and not is_external_contractor
+        )
         if row.rule_action == "Disposition offen":
             order.assignment_type = "Disposition offen"
+            order.auto_dispatch_eligible = True
         elif row.rule_action in {"Kein Subunternehmer", "Interner Hinweis"}:
             order.assignment_type = "Interner Hinweis"
+            order.auto_dispatch_eligible = True
         else:
             order.assignment_type = contractor.contractor_type if contractor else "Eigener Fuhrpark"
         order.customer_order_number = row.customer_order_number
@@ -372,7 +437,14 @@ class DispositionImportService:
         order.unloading_reference = row.unloading_reference
         # Das bisherige Referenzfeld bleibt für bestehende Ansichten kompatibel.
         order.reference = row.loading_reference or row.unloading_reference or row.dossier
-        order.status = "Storniert" if row.is_cancelled else ("Neu" if row.rule_action == "Disposition offen" else ("Geplant" if row.has_planning else "Neu"))
+        if row.is_cancelled:
+            order.status = "Storniert"
+        elif is_external_contractor:
+            order.status = "Extern vergeben"
+        elif row.rule_action == "Disposition offen":
+            order.status = "Neu"
+        else:
+            order.status = "Geplant" if row.has_planning else "Neu"
         order.loading_location_id = loading.id
         order.loading_date = row.loading_date
         order.loading_time_from = row.loading_time_from
@@ -396,12 +468,45 @@ class DispositionImportService:
         order.pallets = row.pallets
         order.remarks = row.remarks
 
+
+    @staticmethod
+    def _normalize_driver_name(value: str) -> str:
+        value = str(value or "").casefold().replace(",", " ")
+        return " ".join(re.findall(r"[a-z0-9äöüß]+", value))
+
+    def _find_driver(self, imported_name: str) -> Driver | None:
+        normalized = self._normalize_driver_name(imported_name)
+        if not normalized or "keiner" in normalized:
+            return None
+        imported_tokens = normalized.split()
+        candidates = list(self.session.scalars(select(Driver).where(Driver.active.is_(True))))
+        exact = []
+        token_matches = []
+        for driver in candidates:
+            names = {
+                self._normalize_driver_name(driver.full_name),
+                self._normalize_driver_name(f"{driver.last_name} {driver.first_name}"),
+                self._normalize_driver_name(driver.match_code),
+            }
+            names.discard("")
+            if normalized in names:
+                exact.append(driver)
+                continue
+            imported_set = set(imported_tokens)
+            for name in names:
+                name_set = set(name.split())
+                if imported_set and (imported_set <= name_set or name_set <= imported_set):
+                    token_matches.append(driver)
+                    break
+        if len(exact) == 1:
+            return exact[0]
+        unique_matches = {driver.id: driver for driver in token_matches}
+        return next(iter(unique_matches.values())) if len(unique_matches) == 1 else None
+
     def _assign_tour(self, order: TransportOrder, row: DispositionImportRow, result: DispositionImportResult, contractor: Contractor) -> None:
         plate = normalize_plate(row.vehicle)
         vehicle = self.session.scalar(select(Vehicle).where(func.replace(func.replace(func.upper(Vehicle.license_plate), " ", ""), "-", "") == re.sub(r"[\s-]", "", plate)))
-        driver = None
-        if row.driver and "KEINER" not in row.driver.upper():
-            driver = self.session.scalar(select(Driver).where(func.lower(func.trim(Driver.first_name + " " + Driver.last_name)) == row.driver.casefold()))
+        driver = self._find_driver(row.driver)
         tour_number = self._tour_number(row.loading_date, plate)
         tour = self.session.scalar(select(Tour).where(func.lower(Tour.tour_number) == tour_number.casefold()))
         if tour is None:
@@ -445,22 +550,20 @@ class DispositionImportService:
             self.session.flush()
             result.tour_assignments += 1
         resource_service = TourResourceAssignmentService(self.session)
+        start_at, end_at = self._import_schedule_bounds(row)
         if driver is not None:
-            schedule = resource_service.time_planning.build_schedule(tour)
-            if schedule.start_at is not None and schedule.end_at is not None and schedule.end_at > schedule.start_at:
-                resource_service.assign_driver_segments(
-                    tour,
-                    [{"driver_id": driver.id, "starts_at": schedule.start_at, "ends_at": schedule.end_at, "reason": "Dispositionsimport"}],
-                    propagate_last=False,
-                    commit=False,
-                )
-            else:
-                # Ohne belastbare Uhrzeit bleibt der Fahrer direkt an der Tour;
-                # ein ungültiger 0-Minuten-Abschnitt darf den Gesamtimport nicht abbrechen.
-                tour.driver_id = driver.id
-                result.warnings += 1
+            resource_service.assign_driver_segments(
+                tour,
+                [{"driver_id": driver.id, "starts_at": start_at, "ends_at": end_at, "reason": "Dispositionsimport"}],
+                propagate_last=False,
+                commit=False,
+            )
         else:
-            resource_service.apply_vehicle_assignment_to_tour(tour, overwrite=False)
+            # Stammfahrer/-trailer übernehmen, ohne während der Importtransaktion
+            # TimePlanningEngine und damit Routing/Geocoding aufzurufen.
+            resource_service.apply_vehicle_assignment_to_tour(
+                tour, overwrite=False, schedule_bounds=(start_at, end_at)
+            )
 
     @staticmethod
     def _tour_number(day: date, plate: str) -> str:

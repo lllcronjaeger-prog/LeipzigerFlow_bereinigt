@@ -1,6 +1,6 @@
 from datetime import date
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from leipzigerflow.database.base import Base
@@ -68,3 +68,42 @@ def test_reactivating_archived_tour_reactivates_orders():
         assert reactivated.status == "Geplant"
         assert not service.is_archived(reactivated)
         assert reactivated.positions[0].transport_order.status == "Geplant"
+
+
+
+def _add_second_tour(session: Session, planning_day: date, order_status: str = "Geplant") -> Tour:
+    first_order = session.scalars(select(TransportOrder)).first()
+    order = TransportOrder(
+        order_number=f"A-{planning_day.day}",
+        customer_id=first_order.customer_id,
+        loading_location_id=first_order.loading_location_id,
+        unloading_location_id=first_order.unloading_location_id,
+        loading_date=planning_day,
+        unloading_date=planning_day,
+        status=order_status,
+    )
+    tour = Tour(tour_number=f"T-2026-{planning_day.day:05d}", tour_date=planning_day, status="Geplant")
+    tour.positions.append(TourPosition(position=1, transport_order=order))
+    session.add(tour)
+    session.commit()
+    return tour
+
+
+def test_period_sync_only_checks_visible_period():
+    with make_session() as session:
+        visible = add_tour_with_order(session, order_status="Erledigt", tour_status="Geplant")
+        hidden = _add_second_tour(session, date(2026, 7, 24), order_status="Erledigt")
+
+        service = TourService(session)
+        assert service.synchronize_completed_tours(date(2026, 7, 23), date(2026, 7, 23)) == 1
+        assert service.get(visible.id).status == "Abgeschlossen"
+        assert service.get(hidden.id).status == "Geplant"
+
+
+def test_get_for_period_excludes_tours_outside_visible_range():
+    with make_session() as session:
+        first = add_tour_with_order(session)
+        _add_second_tour(session, date(2026, 7, 24))
+
+        tours = TourService(session).get_for_period(date(2026, 7, 23), date(2026, 7, 23))
+        assert [tour.id for tour in tours] == [first.id]

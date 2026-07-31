@@ -727,6 +727,7 @@ class PlanningBoardDialog(QDialog):
         self._refresh_pending = False
         self._pending_drop_action = None
 
+        self._legacy_tours_consolidated = False
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(self.REFRESH_INTERVAL_MS)
         self.refresh_timer.timeout.connect(self._periodic_refresh)
@@ -1168,14 +1169,15 @@ class PlanningBoardDialog(QDialog):
             period = type("MonthPeriod", (), {"start": start, "end": end, "contains": lambda self_, d: d is not None and start <= d <= end})()
         else:
             period = PlanningPeriod.week(selected_date) if self.period_mode == PlanningPeriodMode.WEEK else PlanningPeriod.day(selected_date)
-        self.tour_service.consolidate_duplicate_vehicle_tours()
-        self.tour_service.synchronize_completed_tours()
-        all_tours = self.tour_service.get_all()
-        attach_vehicle_continuity(all_tours)
+        if not self._legacy_tours_consolidated:
+            self.tour_service.consolidate_duplicate_vehicle_tours()
+            self._legacy_tours_consolidated = True
+        self.tour_service.synchronize_completed_tours(period.start, period.end)
+        loaded_tours = self.tour_service.get_for_period(period.start, period.end)
+        attach_vehicle_continuity(loaded_tours)
         period_tours = [
-            tour for tour in all_tours
-            if period.contains(self._normalize_date(tour.tour_date))
-            and not self.tour_service.is_archived(tour)
+            tour for tour in loaded_tours
+            if not self.tour_service.is_archived(tour)
         ]
         period_tours.sort(key=lambda item: (item.tour_date, item.tour_number))
         self._refresh_vehicle_filter(period_tours)
@@ -1194,10 +1196,7 @@ class PlanningBoardDialog(QDialog):
             # Den vorherigen Scrollstand erst nach dem Layout-Aufbau restaurieren.
             QTimer.singleShot(0, lambda value=saved_tour_scroll: (None if self._closing else self._restore_tour_scroll(value)))
 
-        self._all_orders = [
-            order for order in self.tour_service.get_unassigned_orders()
-            if order.loading_date == selected_date
-        ]
+        self._all_orders = self.tour_service.get_unassigned_orders_for_day(selected_date)
         self._filter_orders()
         self.order_table.resizeColumnsToContents()
 
@@ -1230,10 +1229,18 @@ class PlanningBoardDialog(QDialog):
     def _restore_preferences(self):
         search = self._settings.value("search", "", type=str)
         status = self._settings.value("status", "", type=str)
+        dispatch_group_id = self._settings.value("dispatch_group_id", "", type=str)
         self.tour_search_edit.setText(search)
         status_index = self.status_filter.findData(status)
         if status_index >= 0:
             self.status_filter.setCurrentIndex(status_index)
+        if dispatch_group_id:
+            try:
+                group_index = self.dispatch_group_filter.findData(int(dispatch_group_id))
+            except (TypeError, ValueError):
+                group_index = -1
+            if group_index >= 0:
+                self.dispatch_group_filter.setCurrentIndex(group_index)
         splitter_state = self._settings.value("work_splitter")
         if isinstance(splitter_state, QByteArray) and not splitter_state.isEmpty():
             self.work_splitter.restoreState(splitter_state)
@@ -1241,6 +1248,8 @@ class PlanningBoardDialog(QDialog):
     def _save_preferences(self):
         self._settings.setValue("search", self.tour_search_edit.text())
         self._settings.setValue("status", self.status_filter.currentData() or "")
+        dispatch_group_id = self.dispatch_group_filter.currentData()
+        self._settings.setValue("dispatch_group_id", "" if dispatch_group_id is None else str(dispatch_group_id))
         vehicle_id = self.vehicle_filter.currentData()
         self._settings.setValue("vehicle_id", "" if vehicle_id is None else str(vehicle_id))
         self._settings.setValue("work_splitter", self.work_splitter.saveState())
@@ -1261,11 +1270,10 @@ class PlanningBoardDialog(QDialog):
             for message in resource_messages:
                 from leipzigerflow.planner.warnings import PlanningWarning
                 warnings.append(PlanningWarning("resource_conflict", message, WarningSeverity.ERROR))
-            try:
-                route_plan = self.tour_service.analyze_multi_stop_tour(tour).current
-            except Exception:
-                route_plan = None
-            card = TourCard(tour, warnings, route_plan=route_plan)
+            # Der reine Aufbau der Plantafel darf weder Online-Routing noch
+            # Geocoding auslösen. Routen werden erst in der Detail-/Planungsaktion
+            # berechnet; so bleibt das Öffnen auch bei vielen Touren reaktionsfähig.
+            card = TourCard(tour, warnings, route_plan=None)
             card.clicked.connect(lambda checked=False, selected_row=row: self._select_tour_row(selected_row))
             card.activated.connect(self._open_selected_tour_details)
             card.driverRequested.connect(lambda tour_id=int(tour.id): self._edit_tour_drivers(tour_id))

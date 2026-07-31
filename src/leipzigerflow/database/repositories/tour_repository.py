@@ -1,3 +1,5 @@
+from datetime import date
+
 from sqlalchemy import select
 from sqlalchemy.orm import (
     Session,
@@ -35,6 +37,15 @@ class TourRepository:
                 TourPosition.transport_order
             ).joinedload(TransportOrder.unloading_location),
         )
+
+    def get_for_period(self, start: date, end: date) -> list[Tour]:
+        """Lädt nur Touren im sichtbaren Zeitraum inklusive aller UI-Beziehungen."""
+        statement = (
+            self._base_statement()
+            .where(Tour.tour_date >= start, Tour.tour_date <= end)
+            .order_by(Tour.tour_date, Tour.tour_number)
+        )
+        return list(self._session.scalars(statement).unique())
 
     def get_all(self) -> list[Tour]:
         statement = self._base_statement().order_by(
@@ -87,6 +98,26 @@ class TourRepository:
 
         return tours
 
+    def get_unassigned_orders_for_day(self, planning_day: date) -> list[TransportOrder]:
+        assigned_order_ids = select(TourPosition.transport_order_id)
+        statement = (
+            select(TransportOrder)
+            .options(
+                joinedload(TransportOrder.customer),
+                joinedload(TransportOrder.loading_location),
+                joinedload(TransportOrder.unloading_location),
+            )
+            .where(
+                ~TransportOrder.id.in_(assigned_order_ids),
+                TransportOrder.status.notin_(("Erledigt", "Storniert", "Extern vergeben")),
+                TransportOrder.assignment_type != "Subunternehmer",
+                TransportOrder.auto_dispatch_eligible.is_(True),
+                TransportOrder.loading_date == planning_day,
+            )
+            .order_by(TransportOrder.loading_date, TransportOrder.order_number)
+        )
+        return list(self._session.scalars(statement))
+
     def get_unassigned_orders(
         self,
     ) -> list[TransportOrder]:
@@ -108,8 +139,10 @@ class TourRepository:
             .where(
                 ~TransportOrder.id.in_(assigned_order_ids),
                 TransportOrder.status.notin_(
-                    ("Erledigt", "Storniert")
+                    ("Erledigt", "Storniert", "Extern vergeben")
                 ),
+                TransportOrder.assignment_type != "Subunternehmer",
+                TransportOrder.auto_dispatch_eligible.is_(True),
             )
             .order_by(
                 TransportOrder.loading_date,

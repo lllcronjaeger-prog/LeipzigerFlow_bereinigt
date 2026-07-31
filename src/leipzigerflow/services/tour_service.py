@@ -32,6 +32,9 @@ class TourService:
     def get_all(self) -> list[Tour]:
         return self.repository.get_all()
 
+    def get_for_period(self, start: date, end: date) -> list[Tour]:
+        return self.repository.get_for_period(start, end)
+
 
     def consolidate_duplicate_vehicle_tours(self) -> int:
         """Führt legacybedingte Doppeltouren je Fahrzeug und Tag zusammen.
@@ -108,7 +111,7 @@ class TourService:
             self._session.commit()
         return merged
 
-    def synchronize_completed_tours(self) -> int:
+    def synchronize_completed_tours(self, start: date | None = None, end: date | None = None) -> int:
         """Schließt Touren automatisch ab, sobald alle enthaltenen Aufträge erledigt sind.
 
         Leere und stornierte Touren werden bewusst nicht verändert. Die Methode
@@ -116,7 +119,8 @@ class TourService:
         aufgerufen werden.
         """
         changed = 0
-        for tour in self.repository.get_all():
+        tours = self.repository.get_for_period(start, end) if start is not None and end is not None else self.repository.get_all()
+        for tour in tours:
             if tour.status == "Storniert" or not tour.positions:
                 continue
             orders = [position.transport_order for position in tour.positions]
@@ -141,6 +145,9 @@ class TourService:
 
     def get_unassigned_orders(self) -> list[TransportOrder]:
         return self.repository.get_unassigned_orders()
+
+    def get_unassigned_orders_for_day(self, planning_day: date) -> list[TransportOrder]:
+        return self.repository.get_unassigned_orders_for_day(planning_day)
 
     def create(self, data: dict[str, Any]) -> Tour:
         cleaned = self._validate_and_clean(data)
@@ -195,6 +202,10 @@ class TourService:
                 raise TourValidationError(
                     "Erledigte oder stornierte Aufträge können nicht disponiert werden."
                 )
+            if order.assignment_type == "Subunternehmer" or not order.auto_dispatch_eligible:
+                raise TourValidationError(
+                    "Der Auftrag ist bereits extern vergeben und kann nicht auf den eigenen Fuhrpark disponiert werden."
+                )
         ordered = sorted(tour.positions, key=lambda item: (item.position, item.id or 0))
         with self._session.no_autoflush:
             for order in additions:
@@ -221,6 +232,10 @@ class TourService:
         if order.status in ("Erledigt", "Storniert"):
             raise TourValidationError(
                 "Erledigte oder stornierte Aufträge können nicht disponiert werden."
+            )
+        if order.assignment_type == "Subunternehmer" or not order.auto_dispatch_eligible:
+            raise TourValidationError(
+                "Der Auftrag ist bereits extern vergeben und kann nicht auf den eigenen Fuhrpark disponiert werden."
             )
         ordered = sorted(tour.positions, key=lambda item: (item.position, item.id or 0))
         insert_at = len(ordered) if target_index is None else max(
