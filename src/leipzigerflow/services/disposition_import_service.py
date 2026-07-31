@@ -12,6 +12,7 @@ from leipzigerflow.imports.disposition_excel import DispositionImportPreview, Di
 from leipzigerflow.models.customer import Customer
 from leipzigerflow.models.contractor import Contractor, ContractorType
 from leipzigerflow.models.driver import Driver
+from leipzigerflow.models.disposition_import_rule import DispositionImportRule
 from leipzigerflow.models.location import Location
 from leipzigerflow.models.location_type import LocationType
 from leipzigerflow.models.tour import Tour
@@ -36,6 +37,9 @@ class DispositionImportResult:
     contractors_created: int = 0
     subcontractor_orders: int = 0
     skipped: int = 0
+    ignored_by_rule: int = 0
+    open_disposition_orders: int = 0
+    warnings: int = 0
 
 
 class DispositionImportService:
@@ -43,11 +47,97 @@ class DispositionImportService:
         self.session = session
 
     def mark_existing(self, preview: DispositionImportPreview) -> DispositionImportPreview:
-        numbers = {row.transport_number.casefold() for row in preview.valid_rows}
-        existing = set(self.session.scalars(select(func.lower(TransportOrder.order_number)).where(func.lower(TransportOrder.order_number).in_(numbers)))) if numbers else set()
+        self._ensure_default_rules()
+        rules = list(self.session.scalars(
+            select(DispositionImportRule)
+            .where(DispositionImportRule.active.is_(True))
+            .order_by(DispositionImportRule.priority, DispositionImportRule.id)
+        ))
+        customer_numbers = {
+            row.customer_order_number.casefold()
+            for row in preview.valid_rows
+            if row.customer_order_number
+        }
+        transport_numbers = {
+            row.transport_number.casefold()
+            for row in preview.valid_rows
+            if row.transport_number
+        }
+        existing_customers = set(self.session.scalars(
+            select(func.lower(TransportOrder.customer_order_number)).where(
+                func.lower(TransportOrder.customer_order_number).in_(customer_numbers)
+            )
+        )) if customer_numbers else set()
+        existing_transports = set(self.session.scalars(
+            select(func.lower(TransportOrder.transport_number)).where(
+                func.lower(TransportOrder.transport_number).in_(transport_numbers)
+            )
+        )) if transport_numbers else set()
         for row in preview.rows:
-            row.status = "Fehler" if row.errors else ("Update" if row.transport_number.casefold() in existing else "Neu")
+            self._apply_import_rule(row, rules)
+            if row.errors:
+                row.status = "Fehler"
+            elif row.rule_action == "Auftrag ignorieren":
+                row.status = "Ignoriert"
+            else:
+                customer_key = row.customer_order_number.casefold()
+                transport_key = row.transport_number.casefold()
+                row.status = "Update" if (
+                    (customer_key and customer_key in existing_customers)
+                    or (not customer_key and transport_key in existing_transports)
+                ) else "Neu"
         return preview
+
+    def _ensure_default_rules(self) -> None:
+        exists = self.session.scalar(select(DispositionImportRule.id).where(
+            func.lower(DispositionImportRule.field_name) == "unternehmer",
+            func.lower(DispositionImportRule.comparison_value) == "storno laut kunde",
+            DispositionImportRule.action == "Auftrag ignorieren",
+        ).limit(1))
+        if exists is None:
+            self.session.add(DispositionImportRule(
+                name="Storno laut Kunde ignorieren", field_name="Unternehmer",
+                operator="ist gleich", comparison_value="Storno laut Kunde",
+                action="Auftrag ignorieren", priority=10, active=True,
+            ))
+            self.session.flush()
+
+    @staticmethod
+    def _normalize_rule_value(value: str) -> str:
+        return re.sub(r"\s+", " ", (value or "").strip()).casefold()
+
+    def _rule_matches(self, rule: DispositionImportRule, row: DispositionImportRow) -> bool:
+        fields = {
+            "Unternehmer": row.subcontractor, "Fahrzeug": row.vehicle,
+            "Fahrer": row.driver, "Frachtzahler": row.freight_payer,
+            "Beladestelle": row.loading_address.name, "Entladestelle": row.unloading_address.name,
+        }
+        actual = fields.get(rule.field_name, row.subcontractor) or ""
+        expected = rule.comparison_value or ""
+        a, e = self._normalize_rule_value(actual), self._normalize_rule_value(expected)
+        if rule.operator == "ist gleich": return a == e
+        if rule.operator == "enthält": return e in a
+        if rule.operator == "beginnt mit": return a.startswith(e)
+        if rule.operator == "endet mit": return a.endswith(e)
+        if rule.operator == "Platzhalter":
+            pattern = re.escape(e).replace(r"\*", ".*").replace(r"\?", ".")
+            return re.fullmatch(pattern, a, flags=re.IGNORECASE) is not None
+        if rule.operator == "Regex":
+            try: return re.search(expected, actual, flags=re.IGNORECASE) is not None
+            except re.error: return False
+        return False
+
+    def _apply_import_rule(self, row: DispositionImportRow, rules: list[DispositionImportRule]) -> None:
+        row.rule_action = row.rule_name = row.responsibility_hint = row.replacement_contractor = row.ignored_reason = ""
+        for rule in rules:
+            if self._rule_matches(rule, row):
+                row.rule_action = rule.action
+                row.rule_name = rule.name
+                row.responsibility_hint = rule.responsibility_hint
+                row.replacement_contractor = rule.replacement_contractor
+                if rule.action == "Auftrag ignorieren":
+                    row.ignored_reason = f"Regel: {rule.name}"
+                break
 
     def import_rows(self, rows: list[DispositionImportRow]) -> DispositionImportResult:
         result = DispositionImportResult()
@@ -56,30 +146,91 @@ class DispositionImportService:
                 if not row.is_valid:
                     result.skipped += 1
                     continue
+                if row.rule_action == "Auftrag ignorieren":
+                    result.ignored_by_rule += 1
+                    continue
                 customer = self._get_or_create_customer(row.freight_payer, result)
                 loading = self._get_or_create_location(row.loading_address, customer, result)
                 unloading = self._get_or_create_location(row.unloading_address, customer, result)
-                order = self.session.scalar(select(TransportOrder).where(func.lower(TransportOrder.order_number) == row.transport_number.casefold()))
+                order = self._find_existing_order(row)
                 if order is None:
-                    order = TransportOrder(order_number=row.transport_number, customer_id=customer.id, loading_location_id=loading.id, unloading_location_id=unloading.id, loading_date=row.loading_date, unloading_date=row.unloading_date)
+                    order = TransportOrder(
+                        order_number=self._unique_internal_order_number(row),
+                        customer_id=customer.id,
+                        loading_location_id=loading.id,
+                        unloading_location_id=unloading.id,
+                        loading_date=row.loading_date,
+                        unloading_date=row.unloading_date,
+                    )
                     self.session.add(order)
                     self.session.flush()
                     result.orders_created += 1
                 else:
                     result.orders_updated += 1
-                contractor = self._get_or_create_contractor(row.subcontractor, result)
+                raw_contractor = row.replacement_contractor or row.subcontractor
+                contractor = None
+                if row.rule_action not in {"Disposition offen", "Kein Subunternehmer", "Interner Hinweis"}:
+                    contractor = self._get_or_create_contractor(raw_contractor, result)
                 self._apply_order(order, row, customer, loading, unloading, contractor)
-                if contractor.is_own_fleet and row.has_planning:
+                if row.rule_action == "Disposition offen":
+                    self._remove_from_own_tour(order)
+                    result.open_disposition_orders += 1
+                elif contractor is not None and contractor.is_own_fleet and row.has_planning:
                     self._assign_tour(order, row, result, contractor)
                 else:
                     self._remove_from_own_tour(order)
-                    if not contractor.is_own_fleet:
+                    if contractor is not None and not contractor.is_own_fleet:
                         result.subcontractor_orders += 1
             self.session.commit()
         except Exception:
             self.session.rollback()
             raise
         return result
+
+    def _find_existing_order(self, row: DispositionImportRow) -> TransportOrder | None:
+        """Kundenauftragsnummer ist der führende fachliche Synchronisationsschlüssel.
+
+        Nur für Altdaten oder interne Aufträge ohne Kundenauftragsnummer wird auf
+        die technische Transportnummer zurückgefallen. Die Dossiernummer ist
+        ausdrücklich kein eindeutiger Schlüssel.
+        """
+        if row.customer_order_number:
+            return self.session.scalar(
+                select(TransportOrder)
+                .where(func.lower(TransportOrder.customer_order_number) == row.customer_order_number.casefold())
+                .order_by(TransportOrder.id)
+                .limit(1)
+            )
+        if row.transport_number:
+            order = self.session.scalar(
+                select(TransportOrder)
+                .where(func.lower(TransportOrder.transport_number) == row.transport_number.casefold())
+                .order_by(TransportOrder.id)
+                .limit(1)
+            )
+            if order is not None:
+                return order
+            # Kompatibilität mit Importen vor Einführung des eigenen Feldes.
+            return self.session.scalar(
+                select(TransportOrder)
+                .where(func.lower(TransportOrder.order_number) == row.transport_number.casefold())
+                .order_by(TransportOrder.id)
+                .limit(1)
+            )
+        return None
+
+    def _unique_internal_order_number(self, row: DispositionImportRow) -> str:
+        base = (row.customer_order_number or row.transport_number or f"IMP-{row.source_row}").strip()
+        base = re.sub(r"\s+", "-", base)[:30] or f"IMP-{row.source_row}"
+        candidate = base
+        counter = 1
+        while self.session.scalar(
+            select(TransportOrder.id).where(func.lower(TransportOrder.order_number) == candidate.casefold())
+        ) is not None:
+            counter += 1
+            suffix = f"-{counter}"
+            candidate = f"{base[:30-len(suffix)]}{suffix}"
+        return candidate
 
     @staticmethod
     def _split_contractor(raw: str) -> tuple[str, str]:
@@ -201,14 +352,27 @@ class DispositionImportService:
         return candidate
 
     @staticmethod
-    def _apply_order(order: TransportOrder, row: DispositionImportRow, customer: Customer, loading: Location, unloading: Location, contractor: Contractor) -> None:
+    def _apply_order(order: TransportOrder, row: DispositionImportRow, customer: Customer, loading: Location, unloading: Location, contractor: Contractor | None) -> None:
         order.customer_id = customer.id
-        order.contractor_id = contractor.id
+        order.contractor_id = contractor.id if contractor else None
         order.contractor_raw = row.subcontractor
-        order.assignment_type = contractor.contractor_type
+        order.import_rule_action = row.rule_action
+        order.planning_owner_hint = row.responsibility_hint or (row.subcontractor if row.rule_action == "Disposition offen" else "")
+        order.auto_dispatch_eligible = row.rule_action not in {"Auftrag ignorieren", "Fest an Subunternehmer vergeben"}
+        if row.rule_action == "Disposition offen":
+            order.assignment_type = "Disposition offen"
+        elif row.rule_action in {"Kein Subunternehmer", "Interner Hinweis"}:
+            order.assignment_type = "Interner Hinweis"
+        else:
+            order.assignment_type = contractor.contractor_type if contractor else "Eigener Fuhrpark"
         order.customer_order_number = row.customer_order_number
+        order.transport_number = row.transport_number
+        order.dossier = row.dossier
+        order.loading_reference = row.loading_reference
+        order.unloading_reference = row.unloading_reference
+        # Das bisherige Referenzfeld bleibt für bestehende Ansichten kompatibel.
         order.reference = row.loading_reference or row.unloading_reference or row.dossier
-        order.status = "Storniert" if row.is_cancelled else ("Geplant" if row.has_planning else "Neu")
+        order.status = "Storniert" if row.is_cancelled else ("Neu" if row.rule_action == "Disposition offen" else ("Geplant" if row.has_planning else "Neu"))
         order.loading_location_id = loading.id
         order.loading_date = row.loading_date
         order.loading_time_from = row.loading_time_from
@@ -254,25 +418,47 @@ class DispositionImportService:
             if vehicle and vehicle.dispatch_group_id:
                 tour.dispatch_group_id = vehicle.dispatch_group_id
             result.tours_updated += 1
-        existing_position = self.session.scalar(select(TourPosition).where(TourPosition.transport_order_id == order.id))
+        # Die Session arbeitet bewusst mit autoflush=False. Vor der Ermittlung
+        # der nächsten Position müssen daher bereits vorgemerkte Zuordnungen
+        # sichtbar gemacht werden, sonst erhalten mehrere Aufträge Position 1.
+        self.session.flush()
+        existing_position = self.session.scalar(
+            select(TourPosition).where(TourPosition.transport_order_id == order.id)
+        )
         if existing_position is None:
-            max_position = self.session.scalar(select(func.max(TourPosition.position)).where(TourPosition.tour_id == tour.id)) or 0
-            self.session.add(TourPosition(tour_id=tour.id, transport_order_id=order.id, position=max_position + 1))
+            max_position = self.session.scalar(
+                select(func.max(TourPosition.position)).where(TourPosition.tour_id == tour.id)
+            ) or 0
+            self.session.add(TourPosition(
+                tour_id=tour.id,
+                transport_order_id=order.id,
+                position=max_position + 1,
+            ))
+            self.session.flush()
             result.tour_assignments += 1
         elif existing_position.tour_id != tour.id:
+            max_position = self.session.scalar(
+                select(func.max(TourPosition.position)).where(TourPosition.tour_id == tour.id)
+            ) or 0
             existing_position.tour_id = tour.id
-            max_position = self.session.scalar(select(func.max(TourPosition.position)).where(TourPosition.tour_id == tour.id)) or 0
             existing_position.position = max_position + 1
+            self.session.flush()
             result.tour_assignments += 1
         resource_service = TourResourceAssignmentService(self.session)
         if driver is not None:
             schedule = resource_service.time_planning.build_schedule(tour)
-            resource_service.assign_driver_segments(
-                tour,
-                [{"driver_id": driver.id, "starts_at": schedule.start_at, "ends_at": schedule.end_at, "reason": "Dispositionsimport"}],
-                propagate_last=False,
-                commit=False,
-            )
+            if schedule.start_at is not None and schedule.end_at is not None and schedule.end_at > schedule.start_at:
+                resource_service.assign_driver_segments(
+                    tour,
+                    [{"driver_id": driver.id, "starts_at": schedule.start_at, "ends_at": schedule.end_at, "reason": "Dispositionsimport"}],
+                    propagate_last=False,
+                    commit=False,
+                )
+            else:
+                # Ohne belastbare Uhrzeit bleibt der Fahrer direkt an der Tour;
+                # ein ungültiger 0-Minuten-Abschnitt darf den Gesamtimport nicht abbrechen.
+                tour.driver_id = driver.id
+                result.warnings += 1
         else:
             resource_service.apply_vehicle_assignment_to_tour(tour, overwrite=False)
 

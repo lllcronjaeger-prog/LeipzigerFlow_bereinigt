@@ -3,6 +3,7 @@ from PySide6.QtGui import QCloseEvent, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
+    QCheckBox,
     QDialogButtonBox,
     QHBoxLayout,
     QLabel,
@@ -19,6 +20,7 @@ from leipzigerflow.services.driver_service import (
 )
 from leipzigerflow.services.location_service import LocationService
 from leipzigerflow.ui.dialogs.driver_import_dialog import DriverImportDialog
+from leipzigerflow.ui.dialogs.driver_merge_dialog import DriverMergeDialog
 from leipzigerflow.ui.dialogs.driver_edit_dialog import (
     DriverEditDialog,
 )
@@ -66,6 +68,9 @@ class DriverDialog(QDialog):
         search_layout.addWidget(
             self.edit_search
         )
+
+        self.chk_archived = QCheckBox("Archivierte Fahrer anzeigen")
+        search_layout.addWidget(self.chk_archived)
 
         main_layout.addLayout(
             search_layout
@@ -121,6 +126,7 @@ class DriverDialog(QDialog):
         self.btn_new = QPushButton("Neu")
         self.btn_edit = QPushButton("Bearbeiten")
         self.btn_delete = QPushButton("Archivieren/Aktivieren")
+        self.btn_merge = QPushButton("Zusammenführen")
 
         action_layout.addWidget(self.btn_import)
         action_layout.addWidget(
@@ -132,6 +138,7 @@ class DriverDialog(QDialog):
         action_layout.addWidget(
             self.btn_delete
         )
+        action_layout.addWidget(self.btn_merge)
         action_layout.addStretch()
 
         close_buttons = QDialogButtonBox(
@@ -157,6 +164,7 @@ class DriverDialog(QDialog):
         self.edit_search.textChanged.connect(
             self._search
         )
+        self.chk_archived.toggled.connect(lambda _checked: self._search(self.edit_search.text()))
 
         self.btn_import.clicked.connect(self._import_drivers)
 
@@ -171,6 +179,7 @@ class DriverDialog(QDialog):
         self.btn_delete.clicked.connect(
             self._delete_driver
         )
+        self.btn_merge.clicked.connect(self._merge_driver)
 
         self.table_view.doubleClicked.connect(
             self._edit_driver
@@ -190,7 +199,7 @@ class DriverDialog(QDialog):
     # ---------------------------------------------------------
 
     def _load_drivers(self):
-        drivers = self.service.get_all()
+        drivers = self.service.get_all(include_archived=self.chk_archived.isChecked())
 
         self.table_model.setDrivers(
             drivers
@@ -204,7 +213,7 @@ class DriverDialog(QDialog):
         text: str,
     ):
         drivers = self.service.search_drivers(
-            text
+            text, include_archived=self.chk_archived.isChecked()
         )
 
         self.table_model.setDrivers(
@@ -384,13 +393,58 @@ class DriverDialog(QDialog):
         driver = self._selected_driver()
         if driver is None:
             return
-        driver.active = not driver.active
+        action = "reaktivieren" if not driver.active else "archivieren"
+        answer = QMessageBox.question(
+            self,
+            "Fahrerstatus ändern",
+            f"Soll {driver.full_name} wirklich {action} werden?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
         try:
-            self.service.update(driver)
+            if driver.active:
+                self.service.archive(driver)
+            else:
+                self.service.reactivate(driver)
         except Exception as error:
             QMessageBox.critical(self, "Fahrer konnte nicht geändert werden", str(error))
             return
         self._search(self.edit_search.text())
+
+    def _merge_driver(self):
+        source = self._selected_driver()
+        if source is None:
+            QMessageBox.information(self, "Fahrer auswählen", "Bitte zuerst den doppelten Fahrer auswählen.")
+            return
+        targets = [driver for driver in self.service.get_all(include_archived=False) if driver.id != source.id]
+        if not targets:
+            QMessageBox.information(self, "Zusammenführen", "Es ist kein anderer aktiver Zielfahrer vorhanden.")
+            return
+        dialog = DriverMergeDialog(source, targets, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        target = self.service.get(dialog.target_driver_id) if dialog.target_driver_id else None
+        if target is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Zusammenführen bestätigen",
+            f"Alle Daten von {source.full_name} werden auf {target.full_name} übertragen. "
+            "Der Quellfahrer wird archiviert. Fortfahren?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.service.merge(source, target)
+        except Exception as error:
+            QMessageBox.critical(self, "Zusammenführen fehlgeschlagen", str(error))
+            return
+        QMessageBox.information(
+            self,
+            "Fahrer zusammengeführt",
+            f"{source.full_name} wurde in {target.full_name} zusammengeführt und archiviert.",
+        )
+        self._refresh(selected_driver_id=target.id)
 
     def _refresh(
         self,
@@ -403,11 +457,11 @@ class DriverDialog(QDialog):
         if search_text:
             drivers = (
                 self.service.search_drivers(
-                    search_text
+                    search_text, include_archived=self.chk_archived.isChecked()
                 )
             )
         else:
-            drivers = self.service.get_all()
+            drivers = self.service.get_all(include_archived=self.chk_archived.isChecked())
 
         self.table_model.setDrivers(
             drivers

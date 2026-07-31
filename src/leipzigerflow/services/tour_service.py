@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from leipzigerflow.database.repositories.tour_repository import TourRepository
 from leipzigerflow.models.location import Location
 from leipzigerflow.models.tour import Tour
+from leipzigerflow.models.tour_driver_assignment import TourDriverAssignment
 from leipzigerflow.models.tour_position import TourPosition
 from leipzigerflow.models.transport_order import TransportOrder
 
@@ -60,7 +61,27 @@ class TourService:
                     position.tour = primary
                     position.position = next_position
                     existing_order_ids.add(int(position.transport_order_id))
-                assignments.extend(list(duplicate.driver_assignments))
+                duplicate_assignments = list(duplicate.driver_assignments)
+                assignments.extend(duplicate_assignments)
+                if not duplicate_assignments and duplicate.driver_id:
+                    # Legacy-Folgeschichten hatten nur driver_id und eine zweite
+                    # Tour. Beim Zusammenführen wird daraus ein Fahrerabschnitt
+                    # innerhalb der einen Fahrzeugtour.
+                    profile = getattr(getattr(primary, "vehicle", None), "staffing_profile", None)
+                    shift_minutes = max(1, int(getattr(profile, "shift_minutes", 600) or 600))
+                    starts_at = datetime.combine(
+                        duplicate.tour_date,
+                        duplicate.planned_start_time or datetime.min.time(),
+                    )
+                    assignments.append(TourDriverAssignment(
+                        driver_id=duplicate.driver_id,
+                        starts_at=starts_at,
+                        ends_at=starts_at + timedelta(minutes=shift_minutes),
+                        sequence=len(assignments) + 1,
+                        change_base_location_id=getattr(getattr(primary, "vehicle", None), "home_base_location_id", None),
+                        change_base_name=str(getattr(getattr(primary, "vehicle", None), "home_base", "") or ""),
+                        change_reason="Übernahme aus ehemaliger Folgeschicht",
+                    ))
                 if not primary.driver_id and duplicate.driver_id:
                     primary.driver_id = duplicate.driver_id
                 if not primary.trailer_id and duplicate.trailer_id:

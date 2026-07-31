@@ -74,6 +74,11 @@ class DispositionImportRow:
     remarks: str = ""
     status: str = "Neu"
     errors: list[str] = field(default_factory=list)
+    rule_action: str = ""
+    rule_name: str = ""
+    responsibility_hint: str = ""
+    replacement_contractor: str = ""
+    ignored_reason: str = ""
 
     @property
     def is_valid(self) -> bool:
@@ -224,6 +229,19 @@ def normalize_plate(value: str) -> str:
     return text.replace(" – ", "-").replace("–", "-")
 
 
+def _is_repeated_header(raw: dict[str, object]) -> bool:
+    transport = _clean(raw.get("transport_number")).casefold()
+    loading = _clean(raw.get("loading_address")).casefold()
+    unloading = _clean(raw.get("unloading_address")).casefold()
+    vehicle = _clean(raw.get("vehicle")).casefold()
+    driver = _clean(raw.get("driver")).casefold()
+    return (
+        transport in {"transportnummer", "transport number"}
+        or (loading == "beladeadresse" and unloading == "entladeadresse")
+        or (vehicle == "fahrzeug" and driver == "fahrer")
+    )
+
+
 def build_preview(path: str | Path) -> DispositionImportPreview:
     source = Path(path)
     if source.suffix.casefold() == ".xlsx":
@@ -235,6 +253,8 @@ def build_preview(path: str | Path) -> DispositionImportPreview:
 
     rows: list[DispositionImportRow] = []
     for offset, raw in enumerate(source_rows):
+        if _is_repeated_header(raw):
+            continue
         loading_from, loading_until = parse_time_window(raw.get("loading_window"))
         unloading_from, unloading_until = parse_time_window(raw.get("unloading_window"))
         row = DispositionImportRow(

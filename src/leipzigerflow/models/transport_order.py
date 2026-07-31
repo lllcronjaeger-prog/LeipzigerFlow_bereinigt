@@ -32,13 +32,28 @@ class TransportOrder(Base):
         index=True,
     )
 
-    # Externe Nummer des Kunden. Darf bei Umfuhren leer sein und
-    # muss nicht eindeutig sein.
+    # Fachlich eindeutige Nummer des Kundenauftrags. Bei rein internen
+    # Umfuhren darf sie ausnahmsweise leer bleiben.
     customer_order_number: Mapped[str] = mapped_column(
         String(100),
         default="",
         nullable=False,
         index=True,
+    )
+    # Technische Referenz aus dem Dispoplan. Sie ist nicht die führende
+    # Nummer in der Disposition und kann mehrere Kundenaufträge bündeln.
+    transport_number: Mapped[str] = mapped_column(
+        String(100), default="", nullable=False, index=True
+    )
+    # Faktura-Sammelreferenz; mehrere Aufträge dürfen dasselbe Dossier haben.
+    dossier: Mapped[str] = mapped_column(
+        String(100), default="", nullable=False, index=True
+    )
+    loading_reference: Mapped[str] = mapped_column(
+        String(150), default="", nullable=False
+    )
+    unloading_reference: Mapped[str] = mapped_column(
+        String(150), default="", nullable=False
     )
 
     order_type: Mapped[str] = mapped_column(
@@ -143,6 +158,9 @@ class TransportOrder(Base):
     contractor_id: Mapped[int | None] = mapped_column(ForeignKey("contractors.id"), nullable=True, index=True)
     contractor_raw: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     assignment_type: Mapped[str] = mapped_column(String(30), default="Eigener Fuhrpark", nullable=False, index=True)
+    auto_dispatch_eligible: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    planning_owner_hint: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    import_rule_action: Mapped[str] = mapped_column(String(50), default="", nullable=False)
 
     remarks: Mapped[str] = mapped_column(
         Text,
@@ -178,6 +196,10 @@ class TransportOrder(Base):
         values = [
             self.order_number,
             self.customer_order_number,
+            self.dossier,
+            self.transport_number,
+            self.loading_reference,
+            self.unloading_reference,
             self.order_type,
             self.reference,
             self.status,

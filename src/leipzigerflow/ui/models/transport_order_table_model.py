@@ -8,8 +8,9 @@ from PySide6.QtCore import (
 from leipzigerflow.services.trailer_compatibility import display_trailer_types
 class TransportOrderTableModel(QAbstractTableModel):
     HEADERS = [
-        "Interne Nr.",
         "Kundenauftrag",
+        "Dossier",
+        "Interne Nr.",
         "Typ",
         "Priorität",
         "Trailertyp",
@@ -43,8 +44,9 @@ class TransportOrderTableModel(QAbstractTableModel):
 
         if role == Qt.ItemDataRole.DisplayRole:
             values = [
-                order.order_number,
                 order.customer_order_number,
+                getattr(order, "dossier", ""),
+                order.order_number,
                 order.order_type,
                 getattr(order, "dispatch_priority", "Eigenfuhrpark bevorzugt"),
                 display_trailer_types(getattr(order, "required_trailer_type", "Plane")),
@@ -71,7 +73,7 @@ class TransportOrderTableModel(QAbstractTableModel):
 
         if (
             role == Qt.ItemDataRole.TextAlignmentRole
-            and index.column() in (2, 3, 4, 6, 8, 10)
+            and index.column() in (3, 4, 5, 7, 9, 11)
         ):
             return Qt.AlignmentFlag.AlignCenter
 
@@ -115,17 +117,18 @@ class TransportOrderTableModel(QAbstractTableModel):
         )
 
         keys = {
-            0: lambda item: item.order_number.casefold(),
-            1: lambda item: item.customer_order_number.casefold(),
-            2: lambda item: item.order_type.casefold(),
-            3: lambda item: getattr(item, "dispatch_priority", "Eigenfuhrpark bevorzugt").casefold(),
-            4: lambda item: display_trailer_types(getattr(item, "required_trailer_type", "Plane")).casefold(),
-            5: lambda item: (item.customer.display_name.casefold() if item.customer else ""),
-            6: lambda item: item.loading_date,
-            7: lambda item: (item.loading_location.full_display.casefold() if item.loading_location else ""),
-            8: lambda item: item.unloading_date,
-            9: lambda item: (item.unloading_location.full_display.casefold() if item.unloading_location else ""),
-            10: lambda item: item.status.casefold(),
+            0: lambda item: item.customer_order_number.casefold(),
+            1: lambda item: getattr(item, "dossier", "").casefold(),
+            2: lambda item: item.order_number.casefold(),
+            3: lambda item: item.order_type.casefold(),
+            4: lambda item: getattr(item, "dispatch_priority", "Eigenfuhrpark bevorzugt").casefold(),
+            5: lambda item: display_trailer_types(getattr(item, "required_trailer_type", "Plane")).casefold(),
+            6: lambda item: (item.customer.display_name.casefold() if item.customer else ""),
+            7: lambda item: item.loading_date,
+            8: lambda item: (item.loading_location.full_display.casefold() if item.loading_location else ""),
+            9: lambda item: item.unloading_date,
+            10: lambda item: (item.unloading_location.full_display.casefold() if item.unloading_location else ""),
+            11: lambda item: item.status.casefold(),
         }
 
         self.layoutAboutToBeChanged.emit()

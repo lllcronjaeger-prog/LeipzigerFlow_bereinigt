@@ -15,8 +15,10 @@ from leipzigerflow.ui.dialogs.customer_import_dialog import CustomerImportDialog
 from leipzigerflow.ui.dialogs.database_settings_dialog import DatabaseSettingsDialog
 from leipzigerflow.ui.dialogs.driver_dialog import DriverDialog
 from leipzigerflow.ui.dialogs.driver_import_dialog import DriverImportDialog
+from leipzigerflow.ui.dialogs.driver_planning_import_dialog import DriverPlanningImportDialog
 from leipzigerflow.ui.dialogs.vehicle_import_dialog import VehicleImportDialog
 from leipzigerflow.ui.dialogs.disposition_import_dialog import DispositionImportDialog
+from leipzigerflow.ui.dialogs.disposition_import_rule_dialog import DispositionImportRuleDialog
 from leipzigerflow.ui.dialogs.fleet_utilization_dialog import FleetUtilizationDialog
 from leipzigerflow.ui.dialogs.location_dialog import LocationDialog
 from leipzigerflow.ui.dialogs.planning_board_dialog import PlanningBoardDialog
@@ -212,11 +214,16 @@ class MainWindow(QMainWindow):
         self.action_driver_import = QAction("Fahrer aus Excel importieren", self)
         self.action_driver_import.triggered.connect(self.open_driver_import)
 
+        self.action_driver_planning_import = QAction("Fahrerplanung aus Modulon importieren", self)
+        self.action_driver_planning_import.triggered.connect(self.open_driver_planning_import)
+
         self.action_vehicle_import = QAction("Fahrzeuge aus Excel importieren", self)
         self.action_vehicle_import.triggered.connect(self.open_vehicle_import)
 
         self.action_disposition_import = QAction("Disposition synchronisieren", self)
         self.action_disposition_import.triggered.connect(self.open_disposition_import)
+        self.action_disposition_import_rules = QAction("Regeln für Dispositionsimport", self)
+        self.action_disposition_import_rules.triggered.connect(self.open_disposition_import_rules)
 
         self.action_drivers = QAction("Fahrer", self)
         self.action_drivers.triggered.connect(self.open_driver_dialog)
@@ -283,9 +290,11 @@ class MainWindow(QMainWindow):
         data_menu = menu.addMenu("Import / Export")
         data_menu.addAction(self.action_customer_import)
         data_menu.addAction(self.action_driver_import)
+        data_menu.addAction(self.action_driver_planning_import)
         data_menu.addAction(self.action_vehicle_import)
         data_menu.addSeparator()
         data_menu.addAction(self.action_disposition_import)
+        data_menu.addAction(self.action_disposition_import_rules)
 
         planning_menu = menu.addMenu("Planung")
         planning_menu.addAction(self.action_transport_orders)
@@ -380,6 +389,7 @@ class MainWindow(QMainWindow):
                 self.action_fleet_utilization,
                 self.action_customer_import,
                 self.action_driver_import,
+                self.action_driver_planning_import,
                 self.action_vehicle_import,
                 self.action_disposition_import,
             ),
@@ -523,12 +533,28 @@ class MainWindow(QMainWindow):
         finally:
             session.close()
 
+    def open_driver_planning_import(self):
+        session = SessionLocal()
+        try:
+            if DriverPlanningImportDialog(session, parent=self).exec():
+                self.window_manager.refresh_all()
+                self._refresh_dashboard()
+        finally:
+            session.close()
+
     def open_vehicle_import(self):
         session = SessionLocal()
         try:
             if VehicleImportDialog(session, parent=self).exec():
                 self.window_manager.refresh_all()
                 self._refresh_dashboard()
+        finally:
+            session.close()
+
+    def open_disposition_import_rules(self):
+        session = SessionLocal()
+        try:
+            DispositionImportRuleDialog(session, parent=self).exec()
         finally:
             session.close()
 

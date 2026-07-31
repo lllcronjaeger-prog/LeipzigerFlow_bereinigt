@@ -7,6 +7,8 @@ class Driver(Base):
     __tablename__ = "drivers"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     match_code: Mapped[str] = mapped_column(String(100), default="", index=True)
+    personnel_number: Mapped[str] = mapped_column(String(50), default="", index=True)
+    modulon_driver_number: Mapped[str] = mapped_column(String(50), default="", index=True)
     first_name: Mapped[str] = mapped_column(String(100), default="")
     last_name: Mapped[str] = mapped_column(String(100), default="")
     street: Mapped[str] = mapped_column(String(150), default="")

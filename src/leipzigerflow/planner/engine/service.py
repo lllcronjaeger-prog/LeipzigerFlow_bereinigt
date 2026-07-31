@@ -65,7 +65,7 @@ class DispatchSimulationService:
         orders = list(self.session.scalars(
             select(TransportOrder)
             .options(joinedload(TransportOrder.customer), joinedload(TransportOrder.loading_location), joinedload(TransportOrder.unloading_location))
-            .where(~TransportOrder.id.in_(assigned_ids), TransportOrder.status.notin_(("Erledigt", "Storniert")), TransportOrder.loading_date == planning_day)
+            .where(~TransportOrder.id.in_(assigned_ids), TransportOrder.status.notin_(("Erledigt", "Storniert")), TransportOrder.auto_dispatch_eligible.is_(True), TransportOrder.loading_date == planning_day)
             .order_by(TransportOrder.loading_date, TransportOrder.order_number)
         ))
         return self.availability_engine.build(vehicles, tours, planning_day), orders
@@ -83,6 +83,7 @@ class DispatchSimulationService:
             .where(
                 ~TransportOrder.id.in_(assigned_ids),
                 TransportOrder.status.notin_(("Erledigt", "Storniert")),
+                TransportOrder.auto_dispatch_eligible.is_(True),
                 TransportOrder.loading_date >= start_day,
                 TransportOrder.loading_date <= end_day,
             )

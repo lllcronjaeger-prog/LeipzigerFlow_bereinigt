@@ -12,6 +12,7 @@ from leipzigerflow.models.trailer import Trailer
 from leipzigerflow.models.vehicle_resource_assignment import VehicleResourceAssignment
 from leipzigerflow.planner.time_planning import TimePlanningEngine
 from leipzigerflow.services.rotation_manager import RotationManager
+from leipzigerflow.services.driver_availability_service import DriverAvailabilityService
 
 
 class ResourceAssignmentError(ValueError):
@@ -24,6 +25,7 @@ class TourResourceAssignmentService:
     def __init__(self, session: Session):
         self.session = session
         self.rotation = RotationManager()
+        self.availability = DriverAvailabilityService()
         self.time_planning = TimePlanningEngine()
 
     def active_drivers(self) -> list[Driver]:
@@ -54,7 +56,7 @@ class TourResourceAssignmentService:
         changed = False
         if assignment.driver_id and (overwrite or not tour.driver_id):
             driver = self.session.get(Driver, assignment.driver_id)
-            if driver and self.rotation.status(driver, tour.tour_date).available:
+            if driver and self.availability.status(driver, tour.tour_date).available:
                 schedule = self.time_planning.build_schedule(tour)
                 tour.driver_id = driver.id
                 tour.driver_assignments.clear()
@@ -99,7 +101,7 @@ class TourResourceAssignmentService:
             driver = self.session.get(Driver, int(item["driver_id"]))
             if driver is None:
                 raise ResourceAssignmentError("Ein ausgewählter Fahrer wurde nicht gefunden.")
-            if not self.rotation.status(driver, item["starts_at"].date()).available:
+            if not self.availability.status(driver, item["starts_at"].date()).available:
                 raise ResourceAssignmentError(
                     f"{driver.full_name or driver.match_code} ist am {item['starts_at']:%d.%m.%Y} laut Arbeitsmodell nicht im Einsatz."
                 )
@@ -257,7 +259,7 @@ class TourResourceAssignmentService:
         for item in future:
             if driver_id is not None:
                 driver = self.session.get(Driver, driver_id)
-                if driver is None or not self.rotation.status(driver, item.tour_date).available:
+                if driver is None or not self.availability.status(driver, item.tour_date).available:
                     continue
                 schedule = self.time_planning.build_schedule(item)
                 item.driver_id = driver_id

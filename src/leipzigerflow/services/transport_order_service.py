@@ -309,6 +309,10 @@ class TransportOrderService:
             "customer_order_number": str(
                 data.get("customer_order_number", "")
             ).strip(),
+            "dossier": str(data.get("dossier", "")).strip(),
+            "transport_number": str(data.get("transport_number", "")).strip(),
+            "loading_reference": str(data.get("loading_reference", "")).strip(),
+            "unloading_reference": str(data.get("unloading_reference", "")).strip(),
             "order_type": order_type,
             "customer_id": customer_id,
             "reference": str(
@@ -355,6 +359,10 @@ class TransportOrderService:
             "customer_order_number": (
                 source.customer_order_number
             ),
+            "dossier": getattr(source, "dossier", ""),
+            "transport_number": getattr(source, "transport_number", ""),
+            "loading_reference": getattr(source, "loading_reference", ""),
+            "unloading_reference": getattr(source, "unloading_reference", ""),
             "order_type": source.order_type,
             "dispatch_priority": getattr(source, "dispatch_priority", "Eigenfuhrpark bevorzugt"),
             "customer_id": source.customer_id,

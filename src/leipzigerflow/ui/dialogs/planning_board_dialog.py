@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -28,6 +28,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QProgressBar,
     QScrollArea,
+    QTabWidget,
+    QDialogButtonBox,
     QSpinBox,
     QSplitter,
     QStackedWidget,
@@ -80,6 +82,59 @@ from leipzigerflow.ui.dragdrop import (
     encode_order_payload,
     validate_tour_drop,
 )
+
+
+class ResourceSelectionDialog(QDialog):
+    """Übersichtliche Ressourcenwahl mit Gruppe und vollständigem Bestand."""
+
+    def __init__(self, title: str, resources, group_resources, group_name: str, current_id=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(560, 520)
+        self._selected_id = None
+        root = QVBoxLayout(self)
+        root.addWidget(QLabel(
+            "Standardmäßig werden nur Ressourcen der aktuellen Dispositionsgruppe angezeigt. "
+            "Über den Reiter <b>Alle</b> bleibt der vollständige Bestand erreichbar."
+        ))
+        self.tabs = QTabWidget()
+        root.addWidget(self.tabs, 1)
+        self.group_list = self._build_list(group_resources, current_id)
+        self.all_list = self._build_list(resources, current_id)
+        self.tabs.addTab(self.group_list, f"{group_name} ({len(group_resources)})")
+        self.tabs.addTab(self.all_list, f"Alle ({len(resources)})")
+        if current_id is not None and not any(int(getattr(item, 'id', 0)) == int(current_id) for item in group_resources):
+            self.tabs.setCurrentWidget(self.all_list)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._accept_selection)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    @staticmethod
+    def _build_list(resources, current_id):
+        widget = QListWidget()
+        widget.setAlternatingRowColors(True)
+        for resource in resources:
+            item = QListWidgetItem(str(getattr(resource, 'display_name', '') or getattr(resource, 'name', '') or resource))
+            item.setData(Qt.ItemDataRole.UserRole, int(resource.id))
+            widget.addItem(item)
+            if current_id is not None and int(resource.id) == int(current_id):
+                widget.setCurrentItem(item)
+        widget.itemDoubleClicked.connect(lambda _item, w=widget: w.window()._accept_selection())
+        return widget
+
+    def _accept_selection(self):
+        widget = self.tabs.currentWidget()
+        item = widget.currentItem() if widget is not None else None
+        if item is None:
+            QMessageBox.information(self, self.windowTitle(), "Bitte eine Ressource auswählen.")
+            return
+        self._selected_id = int(item.data(Qt.ItemDataRole.UserRole))
+        self.accept()
+
+    @property
+    def selected_id(self):
+        return self._selected_id
 
 
 class TourCardListWidget(QListWidget):
@@ -455,7 +510,10 @@ class TourCard(QFrame):
 
         resource_row = QHBoxLayout()
         resource_row.setSpacing(6)
-        assignments = list(getattr(tour, "driver_assignments", []) or [])
+        assignments = sorted(
+            list(getattr(tour, "driver_assignments", []) or []),
+            key=lambda item: (getattr(item, "sequence", 0), getattr(item, "starts_at", datetime.min)),
+        )
         if len(assignments) > 1:
             changes = ", ".join(
                 f"{item.starts_at:%H:%M} {getattr(item.driver, 'full_name', '')}"
@@ -463,7 +521,25 @@ class TourCard(QFrame):
             )
             driver_text = f"👥 {len(assignments)} Fahrer · Wechsel {changes}"
         else:
-            driver_text = f"👤 {tour.driver_display or 'Fahrer auswählen …'}"
+            profile = getattr(getattr(tour, "vehicle", None), "staffing_profile", None)
+            relief = getattr(profile, "relief_driver", None)
+            if (
+                profile
+                and bool(getattr(profile, "sequential_double_shift", False))
+                and relief is not None
+                and getattr(profile, "primary_driver_id", None)
+            ):
+                start_at = schedule.start_at
+                change_at = start_at + timedelta(
+                    minutes=int(getattr(profile, "shift_minutes", 600) or 600)
+                )
+                first_name = tour.driver_display or getattr(getattr(profile, "primary_driver", None), "full_name", "")
+                driver_text = (
+                    f"👥 2 Fahrer · {first_name} · Wechsel {change_at:%H:%M} "
+                    f"{getattr(relief, 'full_name', '')}"
+                )
+            else:
+                driver_text = f"👤 {tour.driver_display or 'Fahrer auswählen …'}"
         self.driver_button = QPushButton(driver_text)
         self.driver_button.setObjectName("resourceChip")
         self.driver_button.setToolTip("Fahrer zuordnen oder Fahrerwechsel an der Basis planen")
@@ -1218,18 +1294,38 @@ class PlanningBoardDialog(QDialog):
             self._session.expire_all()
             self.refresh()
 
+    def _selection_group(self, tour):
+        group_id = self.dispatch_group_filter.currentData() if hasattr(self, "dispatch_group_filter") else None
+        if group_id:
+            group = self._session.get(DispatchGroup, int(group_id))
+            if group is not None:
+                return group
+        group = getattr(tour, "dispatch_group", None)
+        if group is not None:
+            return group
+        for resource in (getattr(tour, "vehicle", None), getattr(tour, "trailer", None)):
+            groups = list(getattr(resource, "dispatch_groups", ()) or ())
+            if groups:
+                return groups[0]
+        return None
+
     def _assign_vehicle(self, tour_id: int) -> None:
         tour = self._tour_by_id(tour_id)
-        vehicles = list(self._session.scalars(select(Vehicle).where(Vehicle.active.is_(True)).order_by(Vehicle.license_plate)))
-        labels = [vehicle.display_name for vehicle in vehicles]
-        if not labels:
+        vehicles = list(self._session.scalars(
+            select(Vehicle).where(Vehicle.active.is_(True)).order_by(Vehicle.license_plate)
+        ))
+        if not vehicles:
             QMessageBox.information(self, "Fahrzeug zuordnen", "Es sind keine aktiven Fahrzeuge vorhanden.")
             return
-        current = next((index for index, vehicle in enumerate(vehicles) if vehicle.id == tour.vehicle_id), 0)
-        label, ok = QInputDialog.getItem(self, "Fahrzeug zuordnen", "Fahrzeug:", labels, current, False)
-        if not ok:
+        group = self._selection_group(tour)
+        group_vehicles = [v for v in vehicles if group and self._resource_belongs_to_dispatch_group(v, int(group.id))]
+        group_name = getattr(group, "name", "Aktuelle Gruppe") if group else "Aktuelle Gruppe"
+        dialog = ResourceSelectionDialog(
+            "Fahrzeug zuordnen", vehicles, group_vehicles, group_name, tour.vehicle_id, self
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        tour.vehicle_id = vehicles[labels.index(label)].id
+        tour.vehicle_id = dialog.selected_id
         self._session.commit()
         self._session.expire_all()
         self.refresh()
@@ -1238,17 +1334,20 @@ class PlanningBoardDialog(QDialog):
         tour = self._tour_by_id(tour_id)
         service = TourResourceAssignmentService(self._session)
         trailers = service.active_trailers()
-        labels = [trailer.display_name for trailer in trailers]
-        if not labels:
+        if not trailers:
             QMessageBox.information(self, "Trailer zuordnen", "Es sind keine aktiven Trailer vorhanden.")
             return
+        group = self._selection_group(tour)
+        group_trailers = [t for t in trailers if group and self._resource_belongs_to_dispatch_group(t, int(group.id))]
+        group_name = getattr(group, "name", "Aktuelle Gruppe") if group else "Aktuelle Gruppe"
         current_id = tour.trailer_id or getattr(getattr(tour, "vehicle", None), "trailer_id", None)
-        current = next((index for index, trailer in enumerate(trailers) if trailer.id == current_id), 0)
-        label, ok = QInputDialog.getItem(self, "Trailer zuordnen", "Trailer (bleibt für Folgetouren am LKW):", labels, current, False)
-        if not ok:
+        dialog = ResourceSelectionDialog(
+            "Trailer zuordnen", trailers, group_trailers, group_name, current_id, self
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
-            service.assign_trailer(tour, trailers[labels.index(label)].id, propagate=True)
+            service.assign_trailer(tour, dialog.selected_id, propagate=True)
         except ResourceAssignmentError as error:
             QMessageBox.warning(self, "Trailer zuordnen", str(error))
             return

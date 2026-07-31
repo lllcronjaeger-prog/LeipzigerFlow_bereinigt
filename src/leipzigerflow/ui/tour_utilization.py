@@ -73,6 +73,18 @@ def calculate_tour_time_utilization(tour, schedule) -> TourTimeUtilization:
 
     duty_days = list(getattr(schedule, "duty_days", []) or [])
 
+    # Eine leere vorbereitete Tagestour besitzt noch keine operative Arbeitszeit.
+    # Fahrerabschnitte oder ein 06:00–06:00-Platzhalter dürfen die Anzeige nicht
+    # auf mehrere Tage bzw. hunderte Stunden aufblasen.
+    if hasattr(tour, "positions") and not list(getattr(tour, "positions", []) or []):
+        return TourTimeUtilization(
+            work_minutes=0,
+            capacity_minutes=daily_capacity,
+            utilization_percent=0.0,
+            driving_minutes=0,
+            deployment_days=1,
+        )
+
     # Auf der Tageskarte ist die Auslastung des stärksten tatsächlichen
     # Arbeitstags relevant. Kalenderwartezeiten, tägliche Ruhezeiten,
     # Wochenenden und Übernachtungen dürfen weder den Zähler noch den Nenner
@@ -101,11 +113,20 @@ def calculate_tour_time_utilization(tour, schedule) -> TourTimeUtilization:
     if assignments:
         # Bei Fahrerwechseln zählt für die Belastungsanzeige der längste
         # tatsächliche Fahrerabschnitt, nicht die gesamte Fahrzeuglaufzeit.
-        segment_minutes = [
-            max(0, int((item.ends_at - item.starts_at).total_seconds() // 60))
-            for item in assignments
-            if getattr(item, "starts_at", None) and getattr(item, "ends_at", None)
-        ]
+        segment_minutes = []
+        for item in assignments:
+            starts_at = getattr(item, "starts_at", None)
+            ends_at = getattr(item, "ends_at", None)
+            if not starts_at or not ends_at:
+                continue
+            # Nur der Schnitt mit dem tatsächlichen Tourzeitraum zählt. Alte
+            # Gültigkeitszeiträume aus der Stammbesetzung sind keine Arbeitszeit.
+            segment_start = max(starts_at, schedule.start_at)
+            segment_end = min(ends_at, schedule.end_at)
+            if segment_end > segment_start:
+                segment_minutes.append(
+                    min(24 * 60, int((segment_end - segment_start).total_seconds() // 60))
+                )
         if segment_minutes:
             work_minutes = max(segment_minutes)
         daily_capacity = max(DEFAULT_DAILY_WORK_MINUTES, configured_minutes)

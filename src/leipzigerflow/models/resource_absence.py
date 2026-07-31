@@ -71,6 +71,8 @@ class DriverAbsence(Base):
     reason: Mapped[str] = mapped_column(String(50), nullable=False, default=AbsenceReason.VACATION.value)
     remarks: Mapped[str] = mapped_column(Text, nullable=False, default="")
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    source: Mapped[str] = mapped_column(String(100), nullable=False, default="Manuell", index=True)
+    source_key: Mapped[str] = mapped_column(String(255), nullable=False, default="", index=True)
 
     driver = relationship("Driver", back_populates="absences")
 

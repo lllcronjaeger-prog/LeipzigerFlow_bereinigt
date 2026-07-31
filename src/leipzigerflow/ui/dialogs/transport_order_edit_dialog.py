@@ -64,7 +64,11 @@ class TransportOrderEditDialog(QDialog):
         self.internal_number_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.customer_order_number_edit = QLineEdit()
         self.customer_order_number_edit.setMaxLength(100)
-        self.customer_order_number_edit.setPlaceholderText("optional, bei Umfuhren darf das Feld leer bleiben")
+        self.customer_order_number_edit.setPlaceholderText("eindeutige Nummer in der Disposition; bei Umfuhren optional")
+        self.dossier_edit = QLineEdit(); self.dossier_edit.setMaxLength(100)
+        self.transport_number_edit = QLineEdit(); self.transport_number_edit.setMaxLength(100)
+        self.loading_reference_edit = QLineEdit(); self.loading_reference_edit.setMaxLength(150)
+        self.unloading_reference_edit = QLineEdit(); self.unloading_reference_edit.setMaxLength(150)
         self.order_type_combo = QComboBox(); self.order_type_combo.addItems(TransportOrderService.ORDER_TYPES)
         self.customer_combo = self._searchable_combo()
         for customer in customers:
@@ -83,6 +87,10 @@ class TransportOrderEditDialog(QDialog):
         for label, widget in (
             ("Interne Nummer:", self.internal_number_label),
             ("Kundenauftrag:", self.customer_order_number_edit),
+            ("Dossier:", self.dossier_edit),
+            ("Transportnummer:", self.transport_number_edit),
+            ("Ladereferenz:", self.loading_reference_edit),
+            ("Entladereferenz:", self.unloading_reference_edit),
             ("Auftragstyp:", self.order_type_combo),
             ("Kunde:", self.customer_combo),
             ("Referenz:", self.reference_edit),
@@ -484,6 +492,10 @@ class TransportOrderEditDialog(QDialog):
         self.customer_order_number_edit.setText(
             order.customer_order_number
         )
+        self.dossier_edit.setText(getattr(order, "dossier", ""))
+        self.transport_number_edit.setText(getattr(order, "transport_number", ""))
+        self.loading_reference_edit.setText(getattr(order, "loading_reference", ""))
+        self.unloading_reference_edit.setText(getattr(order, "unloading_reference", ""))
         self.order_type_combo.setCurrentText(
             order.order_type
         )
@@ -562,6 +574,10 @@ class TransportOrderEditDialog(QDialog):
             "customer_order_number": (
                 self.customer_order_number_edit.text()
             ),
+            "dossier": self.dossier_edit.text(),
+            "transport_number": self.transport_number_edit.text(),
+            "loading_reference": self.loading_reference_edit.text(),
+            "unloading_reference": self.unloading_reference_edit.text(),
             "order_type": (
                 self.order_type_combo.currentText()
             ),

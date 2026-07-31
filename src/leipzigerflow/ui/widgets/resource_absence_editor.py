@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time, timedelta
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -12,7 +12,7 @@ from leipzigerflow.ui.dialogs.resource_absence_dialog import AbsenceDraft, Resou
 
 
 class ResourceAbsenceEditor(QWidget):
-    HEADERS = ("Zustand", "Grund", "Beginn", "Ende", "Bemerkung")
+    HEADERS = ("Zustand", "Grund", "Zeitraum", "Dauer", "Bemerkung")
 
     def __init__(self, absences=(), parent=None):
         super().__init__(parent)
@@ -67,7 +67,20 @@ class ResourceAbsenceEditor(QWidget):
                 state = "🟠 Aktuell gesperrt"
             else:
                 state = "🟡 Geplant"
-            values = (state, draft.reason, draft.starts_at.strftime("%d.%m.%Y %H:%M"), draft.ends_at.strftime("%d.%m.%Y %H:%M"), draft.remarks)
+            full_days = draft.starts_at.time() == time.min and draft.ends_at.time() == time.min
+            if full_days:
+                inclusive_end = draft.ends_at.date() - timedelta(days=1)
+                if inclusive_end == draft.starts_at.date():
+                    period = draft.starts_at.strftime("%d.%m.%Y")
+                else:
+                    period = f"{draft.starts_at:%d.%m.%Y} – {inclusive_end:%d.%m.%Y}"
+                days = max(1, (draft.ends_at.date() - draft.starts_at.date()).days)
+                duration = f"{days} Tag" if days == 1 else f"{days} Tage"
+            else:
+                period = f"{draft.starts_at:%d.%m.%Y %H:%M} – {draft.ends_at:%d.%m.%Y %H:%M}"
+                total_minutes = max(0, int((draft.ends_at - draft.starts_at).total_seconds() // 60))
+                duration = f"{total_minutes // 60}:{total_minutes % 60:02d} h"
+            values = (state, draft.reason, period, duration, draft.remarks)
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value); item.setToolTip(value); self.table.setItem(row, column, item)
         self.table.resizeColumnsToContents()

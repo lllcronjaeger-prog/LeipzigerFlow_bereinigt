@@ -20,3 +20,7 @@ from .dispatch_group import (DispatchGroup, DispatchGroupRule, dispatch_group_us
 from .tour_driver_assignment import TourDriverAssignment
 
 from .vehicle_resource_assignment import VehicleResourceAssignment
+
+from .external_mapping import ExternalMapping
+
+from .disposition_import_rule import DispositionImportRule

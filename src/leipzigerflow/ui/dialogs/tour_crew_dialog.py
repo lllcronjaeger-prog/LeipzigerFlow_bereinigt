@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 
 from leipzigerflow.planner.time_planning import TimePlanningEngine
 from leipzigerflow.services.tour_resource_assignment_service import ResourceAssignmentError, TourResourceAssignmentService
+from leipzigerflow.services.driver_availability_service import DriverAvailabilityService
 
 
 class TourCrewDialog(QDialog):
@@ -23,6 +24,7 @@ class TourCrewDialog(QDialog):
         self.service = TourResourceAssignmentService(session)
         self.drivers = self.service.active_drivers()
         self.schedule = TimePlanningEngine().build_schedule(tour)
+        self.availability = DriverAvailabilityService()
         self.setWindowTitle(f"Fahrerzuordnung · {tour.tour_number}")
         self.resize(760, 430)
 
@@ -51,6 +53,7 @@ class TourCrewDialog(QDialog):
         self.scope = QComboBox()
         self.scope.addItem("Nur diese Tour", "tour")
         self.scope.addItem("Folgetag", "next_day")
+        self.scope.addItem("Bis Ende Arbeitsphase (empfohlen)", "phase_end")
         self.scope.addItem("Bis zu einem Datum", "until_date")
         self.scope.addItem("Bis zur nächsten Änderung", "until_changed")
         scope_form.addRow("Übernahme", self.scope)
@@ -60,9 +63,11 @@ class TourCrewDialog(QDialog):
         self.valid_until.setDate(self.valid_until.date().addDays(7))
         self.valid_until.setEnabled(False)
         scope_form.addRow("Gültig bis", self.valid_until)
-        self.scope.currentIndexChanged.connect(
-            lambda: self.valid_until.setEnabled(self.scope.currentData() == "until_date")
-        )
+        self.phase_info = QLabel("Arbeitszeitmodell wird nach Auswahl des Fahrers geprüft.")
+        self.phase_info.setWordWrap(True)
+        self.phase_info.setObjectName("mutedText")
+        scope_form.addRow("Fahrerstatus", self.phase_info)
+        self.scope.currentIndexChanged.connect(self._scope_changed)
         root.addLayout(scope_form)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._save)
@@ -74,7 +79,12 @@ class TourCrewDialog(QDialog):
             for item in existing:
                 self._add_row(item.driver_id, item.starts_at, item.ends_at, item.change_reason)
         else:
-            self._add_row(getattr(tour, "driver_id", None), self.schedule.start_at, self.schedule.end_at, "")
+            end_at = self.schedule.end_at
+            if end_at <= self.schedule.start_at:
+                end_at = self.schedule.start_at + timedelta(hours=10)
+            self._add_row(getattr(tour, "driver_id", None), self.schedule.start_at, end_at, "")
+        self._scope_changed()
+        self._update_phase_info()
 
     def _add_row(self, driver_id=None, starts_at=None, ends_at=None, reason=""):
         row = self.table.rowCount()
@@ -86,6 +96,7 @@ class TourCrewDialog(QDialog):
             combo.addItem(label, driver.id)
         if driver_id:
             combo.setCurrentIndex(max(0, combo.findData(driver_id)))
+        combo.currentIndexChanged.connect(self._update_phase_info)
         self.table.setCellWidget(row, 0, combo)
 
         if starts_at is None:
@@ -101,6 +112,36 @@ class TourCrewDialog(QDialog):
 
     def _date_time(self, row, col):
         return self.table.cellWidget(row, col).dateTime().toPython()
+
+
+    def _selected_last_driver(self):
+        if self.table.rowCount() == 0:
+            return None
+        combo = self.table.cellWidget(self.table.rowCount() - 1, 0)
+        return self.session.get(type(self.drivers[0]), combo.currentData()) if self.drivers and combo.currentData() else None
+
+    def _scope_changed(self):
+        self.valid_until.setEnabled(self.scope.currentData() == "until_date")
+        self._update_phase_info()
+
+    def _update_phase_info(self):
+        driver = self._selected_last_driver()
+        if driver is None:
+            self.phase_info.setText("Bitte einen Fahrer auswählen.")
+            return
+        start_day = self.tour.tour_date
+        status = self.availability.status(driver, start_day)
+        model = str(getattr(driver, "work_model", "MO-FR") or "MO-FR")
+        if status.available:
+            until = status.available_until.strftime("%d.%m.%Y") if status.available_until else "offen"
+            self.phase_info.setText(
+                f"Modell: {model} · aktuelle Phase: {status.phase} · verfügbar bis einschließlich {until}. "
+                "Modulon-Abwesenheiten haben Vorrang vor dem rechnerischen Modell."
+            )
+            if status.available_until:
+                self.valid_until.setDate(status.available_until)
+        else:
+            self.phase_info.setText(f"Modell: {model} · nicht verfügbar: {status.reason}")
 
     def _remove_row(self):
         row = self.table.currentRow()
@@ -125,6 +166,11 @@ class TourCrewDialog(QDialog):
             valid_until = None
             if scope == "next_day":
                 valid_until = self.tour.tour_date + timedelta(days=1)
+            elif scope == "phase_end":
+                driver = self.session.get(type(self.drivers[0]), segments[-1]["driver_id"]) if self.drivers else None
+                valid_until = self.availability.continuous_available_until(driver, self.tour.tour_date) if driver else None
+                if valid_until is None:
+                    raise ResourceAssignmentError("Der Fahrer ist am Tourtag laut Modulon/Arbeitszeitmodell nicht verfügbar.")
             elif scope == "until_date":
                 valid_until = self.valid_until.date().toPython()
             self.service.assign_driver_segments(
