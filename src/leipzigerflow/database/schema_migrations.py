@@ -60,6 +60,7 @@ def migrate_database(engine: Engine) -> None:
         _add(statements,"locations",columns,"customer_id","INTEGER REFERENCES customers(id)")
         _add(statements,"locations",columns,"match_code","VARCHAR(100) NOT NULL DEFAULT ''")
         _add(statements,"locations",columns,"warehouse_group_id","INTEGER REFERENCES warehouse_groups(id)")
+        _add(statements,"locations",columns,"use_warehouse_group_defaults","BOOLEAN NOT NULL DEFAULT 0")
 
 
     if "drivers" in tables:

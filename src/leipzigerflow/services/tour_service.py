@@ -35,6 +35,9 @@ class TourService:
     def get_for_period(self, start: date, end: date) -> list[Tour]:
         return self.repository.get_for_period(start, end)
 
+    def get_previous_for_vehicles(self, vehicle_ids: set[int], before: date) -> dict[int, Tour]:
+        return self.repository.get_previous_for_vehicles(vehicle_ids, before)
+
 
     def consolidate_duplicate_vehicle_tours(self) -> int:
         """Führt legacybedingte Doppeltouren je Fahrzeug und Tag zusammen.

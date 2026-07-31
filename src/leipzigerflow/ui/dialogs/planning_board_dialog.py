@@ -366,9 +366,9 @@ class OpenOrdersTableView(QTableView):
         self.style().polish(self)
 
 
-def attach_vehicle_continuity(tours) -> None:
+def attach_vehicle_continuity(tours, previous_by_vehicle=None) -> None:
     """Verknüpft aufeinanderfolgende Touren desselben Fahrzeugs für Leerfahrten."""
-    by_vehicle = {}
+    by_vehicle = dict(previous_by_vehicle or {})
     ordered = sorted(
         [tour for tour in tours if getattr(tour, "vehicle_id", None)],
         key=lambda item: (item.tour_date, getattr(item, "planned_start_time", None) or datetime.min.time(), item.tour_number),
@@ -378,7 +378,6 @@ def attach_vehicle_continuity(tours) -> None:
         vehicle_id = int(tour.vehicle_id)
         previous = by_vehicle.get(vehicle_id)
         if previous is not None and previous.positions:
-            previous_schedule = engine.build_schedule(previous)
             last_position = sorted(previous.positions, key=lambda p: (p.position or 0, p.id or 0))[-1]
             vehicle = getattr(tour, "vehicle", None)
             operation_type = str(getattr(vehicle, "operation_type", "") or "").casefold()
@@ -395,7 +394,7 @@ def attach_vehicle_continuity(tours) -> None:
             # der Vortagestour darf deshalb nicht als heutige Arbeitszeit
             # übernommen werden.
             tour.previous_available_at = (
-                previous_schedule.end_at
+                engine.build_schedule(previous).end_at
                 if previous.tour_date == tour.tour_date
                 else None
             )
@@ -441,7 +440,7 @@ class TourCard(QFrame):
         "Storniert": "#b91c1c",
     }
 
-    def __init__(self, tour, warnings, route_plan=None, parent=None):
+    def __init__(self, tour, warnings, route_plan=None, planning_date=None, parent=None):
         super().__init__(parent)
         self.tour = tour
         self.setObjectName("tourCard")
@@ -559,7 +558,7 @@ class TourCard(QFrame):
         resource_row.addWidget(self.trailer_button, 2)
         content.addLayout(resource_row)
 
-        utilization = calculate_tour_time_utilization(tour, schedule)
+        utilization = calculate_tour_time_utilization(tour, schedule, planning_date=planning_date)
         utilization_row = QHBoxLayout()
         utilization_row.setSpacing(8)
         utilization_label = QLabel(f"⏱ Arbeitszeit {utilization.work_text}")
@@ -1174,7 +1173,9 @@ class PlanningBoardDialog(QDialog):
             self._legacy_tours_consolidated = True
         self.tour_service.synchronize_completed_tours(period.start, period.end)
         loaded_tours = self.tour_service.get_for_period(period.start, period.end)
-        attach_vehicle_continuity(loaded_tours)
+        vehicle_ids = {int(tour.vehicle_id) for tour in loaded_tours if getattr(tour, "vehicle_id", None)}
+        previous_by_vehicle = self.tour_service.get_previous_for_vehicles(vehicle_ids, period.start)
+        attach_vehicle_continuity(loaded_tours, previous_by_vehicle)
         period_tours = [
             tour for tour in loaded_tours
             if not self.tour_service.is_archived(tour)
@@ -1273,7 +1274,7 @@ class PlanningBoardDialog(QDialog):
             # Der reine Aufbau der Plantafel darf weder Online-Routing noch
             # Geocoding auslösen. Routen werden erst in der Detail-/Planungsaktion
             # berechnet; so bleibt das Öffnen auch bei vielen Touren reaktionsfähig.
-            card = TourCard(tour, warnings, route_plan=None)
+            card = TourCard(tour, warnings, route_plan=None, planning_date=selected_date)
             card.clicked.connect(lambda checked=False, selected_row=row: self._select_tour_row(selected_row))
             card.activated.connect(self._open_selected_tour_details)
             card.driverRequested.connect(lambda tour_id=int(tour.id): self._edit_tour_drivers(tour_id))

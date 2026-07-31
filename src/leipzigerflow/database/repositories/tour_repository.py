@@ -47,6 +47,33 @@ class TourRepository:
         )
         return list(self._session.scalars(statement).unique())
 
+    def get_previous_for_vehicles(self, vehicle_ids: set[int], before: date) -> dict[int, Tour]:
+        """Lädt je Fahrzeug die letzte Tour vor einem sichtbaren Zeitraum.
+
+        Die Plantafel benötigt diese Vorgänger, damit eine Fernverkehrstour am
+        realen letzten Entladeort startet und nicht fälschlich erneut an der
+        Heimatbasis. Pro Fahrzeug wird nur die jüngste Tour übernommen.
+        """
+        normalized = {int(vehicle_id) for vehicle_id in vehicle_ids if vehicle_id}
+        if not normalized:
+            return {}
+        statement = (
+            self._base_statement()
+            .where(Tour.vehicle_id.in_(normalized), Tour.tour_date < before)
+            .order_by(Tour.vehicle_id, Tour.tour_date.desc(), Tour.planned_start_time.desc(), Tour.id.desc())
+        )
+        result: dict[int, Tour] = {}
+        for tour in self._session.scalars(statement).unique():
+            vehicle_id = int(tour.vehicle_id)
+            if vehicle_id in result:
+                continue
+            if str(getattr(tour, "status", "") or "").casefold() == "storniert":
+                continue
+            if not list(getattr(tour, "positions", []) or []):
+                continue
+            result[vehicle_id] = tour
+        return result
+
     def get_all(self) -> list[Tour]:
         statement = self._base_statement().order_by(
             Tour.tour_date.desc(),

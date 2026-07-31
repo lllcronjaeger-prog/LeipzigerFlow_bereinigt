@@ -6,6 +6,7 @@ from leipzigerflow.planner.engine.models import ResourceAvailability, ResourceSt
 from leipzigerflow.planner.time_planning import TimePlanningEngine
 from leipzigerflow.planner.engine.vehicle_state_service import VehicleStateService
 from leipzigerflow.planner.engine.trailer_state import BaseTrailerPolicy
+from leipzigerflow.services.rotation_manager import RotationManager
 
 
 class ResourceAvailabilityEngine:
@@ -22,6 +23,7 @@ class ResourceAvailabilityEngine:
         self.time_engine = time_engine or TimePlanningEngine()
         self.vehicle_state_service = VehicleStateService()
         self.trailer_policy = BaseTrailerPolicy()
+        self.rotation_manager = RotationManager()
 
     def build(self, vehicles, tours, planning_day: date) -> list[ResourceAvailability]:
         relevant = [tour for tour in tours if tour.vehicle_id]
@@ -45,45 +47,84 @@ class ResourceAvailabilityEngine:
 
     def _from_day_tours(self, vehicle, tours, planning_day: date, known_locations=()) -> list[ResourceAvailability]:
         result: list[ResourceAvailability] = []
-        for index, tour in enumerate(tours, start=1):
+        for tour_index, tour in enumerate(tours, start=1):
             schedule = self.time_engine.build_schedule(tour)
-            shift_start = datetime.combine(planning_day, tour.planned_start_time or time(6, 0))
             profile = getattr(vehicle, "staffing_profile", None)
+            default_start = datetime.combine(planning_day, tour.planned_start_time or time(6, 0))
             shift_minutes = int(getattr(profile, "shift_minutes", self.DEFAULT_SHIFT_MINUTES) or self.DEFAULT_SHIFT_MINUTES)
-            shift_end = shift_start + timedelta(minutes=shift_minutes)
-            driver = getattr(tour, "driver", None)
-            resolved = self.vehicle_state_service.resolve_day_start(vehicle, driver, planning_day, shift_start, tour, known_locations)
-            last_position = tour.positions[-1] if tour.positions else None
-            location = resolved.home_base_location if resolved.return_to_base_required else (last_position.transport_order.unloading_location if last_position else resolved.start_location)
-            available_at = max(shift_start, schedule.end_at)
-            state = self._state_for_tour(tour, schedule.end_at, planning_day)
-            blocked_reason = self._blocking_reason(vehicle, schedule.start_at, schedule.end_at, tour)
-            if blocked_reason:
-                state = ResourceState.WORKSHOP
-            result.append(ResourceAvailability(
-                vehicle_id=int(vehicle.id),
-                vehicle_label=self._vehicle_label(vehicle),
-                driver_id=int(tour.driver_id) if tour.driver_id else None,
-                driver_label=tour.driver_display or "nicht zugeordnet",
-                available_at=available_at,
-                location_id=int(location.id) if location is not None else None,
-                location_label=(getattr(location, "full_display", "") or getattr(location, "name", "") or "Standort unbekannt"),
-                state=state,
-                vehicle_class=self._vehicle_class(vehicle),
-                trailer_type=self._trailer_type(vehicle, tour),
-                **self._trailer_state_fields(vehicle, tour),
-                source_tour_id=int(tour.id),
-                source_tour_number=str(tour.tour_number),
-                reason=blocked_reason or f"Schicht {index}: {shift_start:%H:%M} bis {shift_end:%H:%M}.",
-                duty_start_at=shift_start,
-                duty_end_at=shift_end,
-                shift_label=f"Schicht {index}",
-                return_to_base_required=resolved.return_to_base_required,
-                home_base_location_id=(int(resolved.home_base_location.id) if resolved.home_base_location is not None else None),
-                home_base_location_label=resolved.home_base_label,
-                operation_type=str(getattr(vehicle, "operation_type", "") or ""),
-                driver_operation=str(getattr(driver, "allowed_operation", "") or ""),
-            ))
+            assignments = list(getattr(tour, "driver_assignments", ()) or ())
+
+            # Fahrerabschnitte sind echte, nacheinander verfügbare Schichten
+            # desselben Fahrzeugs. Damit kann ein Shuttle nach dem Fahrerwechsel
+            # weiterlaufen, ohne dass eine zweite Fahrzeugtour angelegt wird.
+            if assignments:
+                segments = [
+                    (
+                        getattr(item, "driver", None),
+                        getattr(item, "starts_at", None) or default_start,
+                        getattr(item, "ends_at", None) or ((getattr(item, "starts_at", None) or default_start) + timedelta(minutes=shift_minutes)),
+                        int(getattr(item, "sequence", index) or index),
+                    )
+                    for index, item in enumerate(assignments, start=1)
+                ]
+            else:
+                driver = getattr(tour, "driver", None)
+                segments = [(driver, default_start, default_start + timedelta(minutes=shift_minutes), 1)]
+
+            for driver, shift_start, shift_end, sequence in segments:
+                resolved = self.vehicle_state_service.resolve_day_start(
+                    vehicle, driver, planning_day, shift_start, tour, known_locations
+                )
+                last_position = tour.positions[-1] if tour.positions else None
+                location = (
+                    resolved.home_base_location
+                    if resolved.return_to_base_required
+                    else (
+                        last_position.transport_order.unloading_location
+                        if last_position else resolved.start_location
+                    )
+                )
+                # Bereits fest eingeplante Arbeit blockiert nur den Abschnitt,
+                # in den sie zeitlich fällt. Folgeschichten starten unabhängig
+                # davon zu ihrem hinterlegten Wechselzeitpunkt.
+                if schedule.end_at <= shift_start:
+                    available_at = shift_start
+                elif schedule.start_at < shift_end:
+                    available_at = max(shift_start, min(schedule.end_at, shift_end))
+                else:
+                    available_at = shift_start
+                state = self._state_for_tour(tour, schedule.end_at, planning_day)
+                blocked_reason = self._blocking_reason(vehicle, shift_start, shift_end, tour)
+                if blocked_reason:
+                    state = ResourceState.WORKSHOP
+                driver_id = int(getattr(driver, "id", 0) or 0) or None
+                driver_label = getattr(driver, "full_name", "") or (
+                    tour.driver_display if sequence == 1 else "nicht zugeordnet"
+                )
+                result.append(ResourceAvailability(
+                    vehicle_id=int(vehicle.id),
+                    vehicle_label=self._vehicle_label(vehicle),
+                    driver_id=driver_id,
+                    driver_label=driver_label,
+                    available_at=available_at,
+                    location_id=int(location.id) if location is not None else None,
+                    location_label=(getattr(location, "full_display", "") or getattr(location, "name", "") or "Standort unbekannt"),
+                    state=state,
+                    vehicle_class=self._vehicle_class(vehicle),
+                    trailer_type=self._trailer_type(vehicle, tour),
+                    **self._trailer_state_fields(vehicle, tour),
+                    source_tour_id=int(tour.id),
+                    source_tour_number=str(tour.tour_number),
+                    reason=blocked_reason or f"Schicht {sequence}: {shift_start:%H:%M} bis {shift_end:%H:%M}.",
+                    duty_start_at=shift_start,
+                    duty_end_at=shift_end,
+                    shift_label=f"Schicht {sequence}",
+                    return_to_base_required=resolved.return_to_base_required,
+                    home_base_location_id=(int(resolved.home_base_location.id) if resolved.home_base_location is not None else None),
+                    home_base_location_label=resolved.home_base_label,
+                    operation_type=str(getattr(vehicle, "operation_type", "") or ""),
+                    driver_operation=str(getattr(driver, "allowed_operation", "") or ""),
+                ))
         return result
 
     def _from_vehicle(self, vehicle, last_tour, planning_day: date, known_locations=()) -> ResourceAvailability:
@@ -97,7 +138,7 @@ class ResourceAvailabilityEngine:
         blocked_reason = self._blocking_reason(vehicle, duty_start, duty_end, None)
         if blocked_reason:
             state = ResourceState.WORKSHOP
-        driver = getattr(profile, "primary_driver", None)
+        driver = self._driver_for_day(profile, planning_day)
         driver_id = int(driver.id) if driver is not None else None
         driver_label = getattr(driver, "full_name", "") or "nicht zugeordnet"
         resolved = self.vehicle_state_service.resolve_day_start(vehicle, driver, planning_day, duty_start, last_tour, known_locations)
@@ -144,6 +185,23 @@ class ResourceAvailabilityEngine:
             driver_operation=str(getattr(driver, "allowed_operation", "") or ""),
         )
 
+
+    def _driver_for_day(self, profile, planning_day: date):
+        if profile is None:
+            return None
+        candidates = [
+            getattr(profile, "primary_driver", None),
+            getattr(profile, "relief_driver", None),
+        ]
+        for driver in candidates:
+            if driver is None:
+                continue
+            try:
+                if self.rotation_manager.status(driver, planning_day).available:
+                    return driver
+            except Exception:
+                continue
+        return next((driver for driver in candidates if driver is not None), None)
 
     @staticmethod
     def _known_locations(tours):

@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QLineEdit,
+    QPushButton,
     QSpinBox,
     QVBoxLayout,
 )
@@ -74,6 +75,9 @@ class LocationEditDialog(QDialog):
         self.chk_time_window_required = QCheckBox(
             "Für diesen Standort muss ein Zeitfenster gebucht werden"
         )
+        self.chk_group_defaults = QCheckBox("Standardwerte der Lagergruppe verwenden")
+        self.btn_reset_group_defaults = QPushButton("↺ Auf Standard der Lagergruppe zurücksetzen")
+        self.btn_reset_group_defaults.clicked.connect(self._reset_to_group_defaults)
 
         self.loading_duration_spin = QSpinBox()
         self.loading_duration_spin.setRange(0, 600)
@@ -101,6 +105,8 @@ class LocationEditDialog(QDialog):
         form.addRow("Telefon", self.edit_phone)
         form.addRow("E-Mail", self.edit_email)
         form.addRow("Öffnungszeiten", self.edit_opening_hours)
+        form.addRow("", self.chk_group_defaults)
+        form.addRow("", self.btn_reset_group_defaults)
         form.addRow("", self.chk_time_window_required)
         form.addRow("Ladedauer", self.loading_duration_spin)
         form.addRow("Entladedauer", self.unloading_duration_spin)
@@ -144,6 +150,10 @@ class LocationEditDialog(QDialog):
             self.edit_phone.setText(location.phone)
             self.edit_email.setText(location.email)
             self.edit_opening_hours.setText(location.opening_hours)
+            self.chk_group_defaults.setChecked(bool(getattr(location, "use_warehouse_group_defaults", False)))
+            has_group = getattr(location, "warehouse_group", None) is not None
+            self.chk_group_defaults.setEnabled(has_group)
+            self.btn_reset_group_defaults.setEnabled(has_group)
             self.chk_time_window_required.setChecked(
                 bool(getattr(location, "time_window_booking_required", False))
                 or str(getattr(location, "time_window", "") or "").strip().lower()
@@ -156,6 +166,27 @@ class LocationEditDialog(QDialog):
 
         else:
             self.edit_country.setText("Deutschland")
+            self.chk_group_defaults.setEnabled(False)
+            self.btn_reset_group_defaults.setEnabled(False)
+
+        self.chk_group_defaults.toggled.connect(self._group_defaults_toggled)
+        self._group_defaults_toggled(self.chk_group_defaults.isChecked())
+
+    def _reset_to_group_defaults(self):
+        group = getattr(self.location, "warehouse_group", None) if self.location is not None else None
+        if group is None:
+            return
+        self.edit_opening_hours.setText(group.monday_hours or "")
+        self.loading_duration_spin.setValue(max(0, int(group.standard_loading_minutes or 0)))
+        self.unloading_duration_spin.setValue(max(0, int(group.standard_unloading_minutes or 0)))
+        self.chk_group_defaults.setChecked(True)
+
+    def _group_defaults_toggled(self, enabled: bool):
+        has_group = self.location is not None and getattr(self.location, "warehouse_group", None) is not None
+        inherited = bool(enabled and has_group)
+        self.edit_opening_hours.setEnabled(not inherited)
+        self.loading_duration_spin.setEnabled(not inherited)
+        self.unloading_duration_spin.setEnabled(not inherited)
 
     def get_location_data(self):
 
@@ -174,6 +205,7 @@ class LocationEditDialog(QDialog):
             "phone": self.edit_phone.text().strip(),
             "email": self.edit_email.text().strip(),
             "opening_hours": self.edit_opening_hours.text().strip(),
+            "use_warehouse_group_defaults": self.chk_group_defaults.isChecked(),
             # Das alte Freitextfeld wird bewusst geleert. Die fachliche Aussage
             # wird jetzt eindeutig ueber das Kontrollkaestchen gespeichert.
             "time_window": "",

@@ -38,6 +38,12 @@ class Location(Base):
         index=True,
     )
 
+    use_warehouse_group_defaults: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+
     name: Mapped[str] = mapped_column(
         String(100),
         nullable=False,
@@ -148,9 +154,22 @@ class Location(Base):
     @property
     def effective_opening_hours(self) -> str:
         """Individuelle Öffnungszeit oder Standard der Lagergruppe."""
+        if self.use_warehouse_group_defaults and self.warehouse_group:
+            return self.warehouse_group.monday_hours
         return self.opening_hours or (
             self.warehouse_group.monday_hours if self.warehouse_group else ""
         )
+
+    def apply_warehouse_group_defaults(self) -> bool:
+        """Setzt lokale Lagerwerte auf den aktuellen Gruppenstandard zurück."""
+        group = self.warehouse_group
+        if group is None:
+            return False
+        self.opening_hours = group.monday_hours or ""
+        self.loading_duration_minutes = max(0, int(group.standard_loading_minutes or 0))
+        self.unloading_duration_minutes = max(0, int(group.standard_unloading_minutes or 0))
+        self.use_warehouse_group_defaults = True
+        return True
 
     @property
     def alias_list(self) -> list[str]:

@@ -104,4 +104,7 @@ class WarehouseGroupDialog(QDialog):
         dialog = WarehouseGroupEditDialog(group, self)
         if dialog.exec() != QDialog.DialogCode.Accepted: return
         for key, value in dialog.data().items(): setattr(group, key, value)
+        for location in list(getattr(group, "locations", []) or []):
+            if bool(getattr(location, "use_warehouse_group_defaults", False)):
+                location.apply_warehouse_group_defaults()
         self.session.commit(); self.refresh()

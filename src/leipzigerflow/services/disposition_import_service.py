@@ -347,6 +347,7 @@ class DispositionImportService:
                 location_type=location_type,
                 customer_id=customer.id if belongs_to_customer else None,
                 warehouse_group_id=group.id if group else None,
+                use_warehouse_group_defaults=bool(group),
                 match_code=self._generate_location_match_code(address),
                 name=address.name[:100], short_name=address.name[:30],
                 street=address.street[:100], house_number=address.house_number[:20],
@@ -354,6 +355,9 @@ class DispositionImportService:
                 country=address.country[:50], active=True,
             )
             self.session.add(location)
+            if group is not None:
+                location.warehouse_group = group
+                location.apply_warehouse_group_defaults()
             self.session.flush()
             result.locations_created += 1
         else:

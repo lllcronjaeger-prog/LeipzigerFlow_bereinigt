@@ -121,7 +121,7 @@ class AutomaticDispatcher:
         working_resources = list(resources)
         planning_context = FleetPlanningContext.build(resources, orders)
         assignments_by_vehicle: dict[int, int] = {}
-        planned_minutes_by_vehicle: dict[int, int] = {}
+        planned_minutes_by_resource: dict[tuple, int] = {}
         transfer_route_cache: dict[tuple[int | None, int | None], object | None] = {}
         transfer_cache_hits = 0
         transfer_cache_misses = 0
@@ -175,7 +175,7 @@ class AutomaticDispatcher:
                         order,
                         route_by_order.get(order_id),
                         resource=resource,
-                        already_planned_minutes=planned_minutes_by_vehicle.get(resource.vehicle_id, 0),
+                        already_planned_minutes=planned_minutes_by_resource.get(self._resource_work_key(resource), 0),
                     )
                     prior_assignments = assignments_by_vehicle.get(resource.vehicle_id, 0)
                     if score.feasible:
@@ -188,7 +188,7 @@ class AutomaticDispatcher:
                             score, order, resource=resource,
                             prior_assignments=prior_assignments,
                         )
-                        planned_minutes = planned_minutes_by_vehicle.get(resource.vehicle_id, 0)
+                        planned_minutes = planned_minutes_by_resource.get(self._resource_work_key(resource), 0)
                         chain_length = chain_plan.chain_length_from(order_id)
                         is_reserved_continuation = owner_vehicle_id is not None
                         if is_reserved_continuation:
@@ -411,7 +411,8 @@ class AutomaticDispatcher:
             assignments_by_vehicle[resource.vehicle_id] = assignments_by_vehicle.get(resource.vehicle_id, 0) + 1
             unused_vehicle_ids.discard(int(resource.vehicle_id))
             assignment_minutes = self._assignment_work_minutes(assignment, best_order)
-            planned_minutes_by_vehicle[resource.vehicle_id] = planned_minutes_by_vehicle.get(resource.vehicle_id, 0) + assignment_minutes
+            resource_key = self._resource_work_key(resource)
+            planned_minutes_by_resource[resource_key] = planned_minutes_by_resource.get(resource_key, 0) + assignment_minutes
             self._record_decision(assignment)
             remaining.remove(int(best_order.id))
             successor_id = chain_plan.successor(int(best_order.id))
@@ -483,6 +484,20 @@ class AutomaticDispatcher:
             return all_scores
         highest = max(self._dispatch_priority_rank(item[1]) for item in all_scores)
         return [item for item in all_scores if self._dispatch_priority_rank(item[1]) == highest]
+
+    @staticmethod
+    def _resource_work_key(resource) -> tuple:
+        """Arbeitszeit gehört zur Fahrerschicht, nicht pauschal zum Fahrzeug.
+
+        Bei einem planmäßigen Fahrerwechsel darf die bereits geleistete Arbeit
+        des ersten Fahrers die zweite Schicht desselben Fahrzeugs nicht sperren.
+        """
+        return (
+            int(getattr(resource, "vehicle_id", 0) or 0),
+            int(getattr(resource, "driver_id", 0) or 0),
+            getattr(resource, "duty_start_at", None),
+            str(getattr(resource, "shift_label", "") or ""),
+        )
 
     def _apply_hard_business_rules(self, score, order, route_result, *, resource, already_planned_minutes: int) -> None:
         """Reject operationally invalid assignments before any score ranking.

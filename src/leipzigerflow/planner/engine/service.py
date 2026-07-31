@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import joinedload, selectinload
 
 from leipzigerflow.models.tour import Tour
+from leipzigerflow.models.tour_driver_assignment import TourDriverAssignment
 from leipzigerflow.models.driver import Driver
 from leipzigerflow.models.tour_position import TourPosition
 from leipzigerflow.models.transport_order import TransportOrder
@@ -55,6 +56,7 @@ class DispatchSimulationService:
                 select(Tour)
                 .options(
                     joinedload(Tour.driver), joinedload(Tour.vehicle),
+                    selectinload(Tour.driver_assignments).joinedload(TourDriverAssignment.driver).joinedload(Driver.home_base_location),
                     selectinload(Tour.positions).joinedload(TourPosition.transport_order).joinedload(TransportOrder.loading_location),
                     selectinload(Tour.positions).joinedload(TourPosition.transport_order).joinedload(TransportOrder.unloading_location),
                 )
